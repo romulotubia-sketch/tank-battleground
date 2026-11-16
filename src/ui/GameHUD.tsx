@@ -4,17 +4,22 @@ import {
   Home,
   Maximize2,
   Minimize2,
+  Music,
   Pause,
   Play,
+  Radio,
   RotateCcw,
   RotateCw,
   Shield,
+  Sparkles,
+  Target,
   Users,
   Volume2,
   VolumeX,
   Zap,
 } from 'lucide-react';
 import { TouchJoystick } from '../components/TouchJoystick';
+import { MINE_SYSTEM_CONFIG } from '../data/powerups';
 import {
   getEffectiveTankMaxHp,
   getEffectiveTankReloadSec,
@@ -33,6 +38,7 @@ interface GameHUDProps {
   settings: GameSettings;
   selectedTankId?: TankId;
   onToggleSound: () => void;
+  onToggleMusic?: () => void;
   onExitToMenu: () => void;
   onRestartMatch: () => void;
 }
@@ -60,8 +66,18 @@ export function createInitialHud(tankId: TankId = 'assault'): HUDStateSnapshot {
     abilityActiveSec: 0,
     abilityName: def.activeAbility.name,
     activeBuffs: [],
+    mineCharges: 0,
+    maxMineCharges: MINE_SYSTEM_CONFIG.maxCarriedCharges,
+    activeMineCount: 0,
     isConcealed: false,
+    isPhased: false,
+    isSlowed: false,
+    slowRemainingSec: 0,
     radarActive: false,
+    radarRemainingSec: 0,
+    radarDetectedCount: 0,
+    recentPickupName: null,
+    recentPickupColor: null,
     isPaused: false,
     isPreparing: true,
     prepLabel: '3',
@@ -79,6 +95,7 @@ export function GameHUD({
   settings,
   selectedTankId = 'assault',
   onToggleSound,
+  onToggleMusic,
   onExitToMenu,
   onRestartMatch,
 }: GameHUDProps) {
@@ -217,6 +234,8 @@ export function GameHUD({
                     ? 'text-[#FACC15]'
                     : hud.abilityName === 'Shell Barrage'
                     ? 'text-red-400'
+                    : hud.abilityName === 'Phase Shift'
+                    ? 'text-violet-300'
                     : 'text-sky-300'
                 }`}
               >
@@ -233,13 +252,54 @@ export function GameHUD({
             )}
           </div>
 
+          {(hud.mineCharges > 0 || hud.activeMineCount > 0) && (
+            <div className="flex items-center justify-between gap-2 pt-0.5 text-[10px] font-mono tabular-nums">
+              <span className="inline-flex items-center gap-1 text-orange-300 font-semibold">
+                <Target className="w-3 h-3 text-orange-400 shrink-0" />
+                MINES {hud.mineCharges}/{hud.maxMineCharges}
+                {hud.activeMineCount > 0 && (
+                  <span className="text-[#F3EFE6]/55">({hud.activeMineCount} SET)</span>
+                )}
+              </span>
+              {hud.mineCharges > 0 && !hud.isPreparing && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    gameBridge.input.deployMinePressed = true;
+                  }}
+                  className="px-1.5 py-0.5 rounded border border-orange-400/60 text-orange-300 font-sans font-semibold hover:bg-orange-500/20 active:scale-95 transition"
+                >
+                  Drop (F)
+                </button>
+              )}
+            </div>
+          )}
+
           {hud.activeBuffs.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px] font-mono tabular-nums">
-              {hud.activeBuffs.map((b) => (
-                <span key={b.id} className="font-semibold" style={{ color: b.color }}>
-                  {b.shortLabel} {Math.ceil(b.remainingSec)}s
-                </span>
-              ))}
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[10px] font-mono tabular-nums">
+              {hud.activeBuffs.map((b) => {
+                const pct =
+                  b.totalSec > 0
+                    ? Math.max(0, Math.min(100, (b.remainingSec / b.totalSec) * 100))
+                    : 100;
+                return (
+                  <div
+                    key={b.id}
+                    className="flex flex-col rounded border px-1.5 py-0.5 bg-[#0F110F]/75 min-w-[50px]"
+                    style={{ borderColor: `${b.color}88` }}
+                  >
+                    <span className="font-bold leading-tight" style={{ color: b.color }}>
+                      {b.shortLabel} {Math.ceil(b.remainingSec)}s
+                    </span>
+                    <span className="w-full h-0.5 mt-0.5 rounded-xs bg-[#272B26] overflow-hidden">
+                      <span
+                        className="block h-full"
+                        style={{ width: `${pct}%`, backgroundColor: b.color }}
+                      />
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -262,6 +322,24 @@ export function GameHUD({
             </span>
           </div>
 
+          {hud.recentPickupName && (
+            <div
+              className="inline-flex items-center gap-1.5 bg-[#141714]/90 border rounded px-2.5 py-0.5 text-[11px] font-bold tracking-wide shadow"
+              style={{
+                borderColor: hud.recentPickupColor ?? '#E08E26',
+                color: hud.recentPickupColor ?? '#F3EFE6',
+              }}
+            >
+              <Sparkles className="w-3 h-3 shrink-0" />
+              PICKUP: {hud.recentPickupName.toUpperCase()}
+            </div>
+          )}
+          {hud.radarActive && !hud.isPreparing && (
+            <div className="inline-flex items-center gap-1.5 text-[11px] font-mono font-bold text-emerald-300 bg-[#052E23]/88 border border-emerald-400/55 px-2.5 py-0.5 rounded tabular-nums">
+              <Radio className="w-3 h-3 text-emerald-400 shrink-0" />
+              RADAR {Math.ceil(hud.radarRemainingSec)}s · {hud.radarDetectedCount} DETECTED
+            </div>
+          )}
           {hud.killFeedText && (
             <div className="bg-[#141714]/85 border border-[#E08E26]/40 rounded px-2.5 py-0.5 text-[11px] font-medium text-[#F3EFE6]">
               {hud.killFeedText}
@@ -272,10 +350,40 @@ export function GameHUD({
               Concealed in brush
             </div>
           )}
+          {hud.isPhased && (
+            <div className="text-[11px] font-mono font-bold text-violet-300 bg-[#2E1065]/85 border border-violet-400/50 px-2 py-0.5 rounded tabular-nums">
+              PHASED {hud.abilityActiveSec.toFixed(1)}s
+            </div>
+          )}
+          {hud.isSlowed && (
+            <div className="text-[11px] font-mono font-bold text-cyan-300 bg-[#083344]/85 border border-cyan-400/50 px-2 py-0.5 rounded tabular-nums">
+              ⚡ SLOWED {hud.slowRemainingSec.toFixed(1)}s
+            </div>
+          )}
         </div>
 
-        {/* Right Fullscreen & Pause Controls */}
+        {/* Right Quick Mute, Fullscreen & Pause Controls */}
         <div className="pointer-events-auto flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              onToggleSound();
+              soundFX.configure(
+                !settings.soundEnabled,
+                settings.soundVolume,
+                settings.musicEnabled,
+                settings.musicVolume
+              );
+            }}
+            aria-label={settings.soundEnabled ? 'Mute sound effects' : 'Unmute sound effects'}
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg bg-[#141714]/85 border border-[#F3EFE6]/25 text-[#F3EFE6] hover:bg-[#242823] active:scale-95 transition"
+          >
+            {settings.soundEnabled ? (
+              <Volume2 className="w-4 h-4 text-[#E08E26]" />
+            ) : (
+              <VolumeX className="w-4 h-4 text-[#F3EFE6]/55" />
+            )}
+          </button>
           {canFullscreen && (
             <button
               type="button"
@@ -333,6 +441,7 @@ export function GameHUD({
               label="Move"
               accentColor="#E08E26"
               size={stickSize}
+              sensitivity={settings.controlSensitivity}
               onChange={(nx, ny) => {
                 gameBridge.input.moveX = nx;
                 gameBridge.input.moveY = ny;
@@ -363,9 +472,17 @@ export function GameHUD({
                     ? 'bg-[#FACC15] border-[#FEF08A] text-[#141714]'
                     : hud.abilityName === 'Shell Barrage'
                     ? 'bg-[#EF4444] border-[#FCA5A5] text-[#F3EFE6]'
+                    : hud.abilityName === 'EMP Pulse'
+                    ? 'bg-[#22D3EE] border-[#A5F3FC] text-[#141714]'
+                    : hud.abilityName === 'Phase Shift'
+                    ? 'bg-[#A78BFA] border-[#DDD6FE] text-[#141714]'
                     : 'bg-[#E08E26] border-[#F3EFE6] text-[#141714]'
                   : abilityReady
-                  ? 'bg-[#2B3329]/90 border-[#E08E26] text-[#F3EFE6]'
+                  ? hud.abilityName === 'EMP Pulse'
+                    ? 'bg-[#16343D]/90 border-[#22D3EE] text-[#E0F2FE]'
+                    : hud.abilityName === 'Phase Shift'
+                    ? 'bg-[#2B2240]/90 border-[#A78BFA] text-[#EDE9FE]'
+                    : 'bg-[#2B3329]/90 border-[#E08E26] text-[#F3EFE6]'
                   : 'bg-[#141714]/80 border-[#F3EFE6]/25 text-[#F3EFE6]/60'
               }`}
             >
@@ -378,6 +495,31 @@ export function GameHUD({
                   : `${Math.ceil(hud.abilityCooldownSec)}s`}
               </span>
             </button>
+
+            {/* Mine Deploy Button (shown when holding Mine Kit charges) */}
+            {hud.mineCharges > 0 && (
+              <button
+                type="button"
+                disabled={hud.isPreparing}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  if (!hud.isPreparing) {
+                    gameBridge.input.deployMinePressed = true;
+                  }
+                }}
+                aria-label="Deploy proximity mine"
+                className={`touch-none-game relative ${reloadBtnSize} rounded-full border-2 flex flex-col items-center justify-center font-display font-bold transition active:scale-95 ${
+                  hud.isPreparing
+                    ? 'bg-[#141714]/65 border-[#F3EFE6]/20 text-[#F3EFE6]/35 cursor-not-allowed'
+                    : 'bg-[#3D2212]/92 border-orange-400 text-orange-200'
+                }`}
+              >
+                <Target className="w-3.5 h-3.5 text-orange-400" />
+                <span className="text-[9px] sm:text-[10px] leading-tight mt-0.5 tabular-nums">
+                  MINE ({hud.mineCharges})
+                </span>
+              </button>
+            )}
 
             {/* Manual Reload Button */}
             <button
@@ -409,6 +551,7 @@ export function GameHUD({
               label="Aim"
               accentColor="#F3EFE6"
               size={stickSize}
+              sensitivity={settings.controlSensitivity}
               onChange={(nx, ny, active) => {
                 if (hud.isPreparing) {
                   gameBridge.input.aimX = 0;
@@ -483,6 +626,7 @@ export function GameHUD({
               <button
                 type="button"
                 onClick={() => {
+                  gameBridge.clearLastHudSnapshot();
                   gameBridge.sendCommand('RESTART');
                   onRestartMatch();
                 }}
@@ -492,21 +636,51 @@ export function GameHUD({
                 Restart Match
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  onToggleSound();
-                  soundFX.configure(!settings.soundEnabled, settings.soundVolume);
-                }}
-                className="min-h-[44px] w-full rounded-lg bg-[#2B3029] border border-[#F3EFE6]/20 text-[#F3EFE6] font-medium text-sm flex items-center justify-center gap-2 hover:bg-[#353C33] transition whitespace-nowrap"
-              >
-                {settings.soundEnabled ? (
-                  <Volume2 className="w-4 h-4 text-[#E08E26]" />
-                ) : (
-                  <VolumeX className="w-4 h-4 text-[#F3EFE6]/60" />
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onToggleSound();
+                    soundFX.configure(
+                      !settings.soundEnabled,
+                      settings.soundVolume,
+                      settings.musicEnabled,
+                      settings.musicVolume
+                    );
+                  }}
+                  className="min-h-[44px] px-3 rounded-lg bg-[#2B3029] border border-[#F3EFE6]/20 text-[#F3EFE6] font-medium text-sm flex items-center justify-center gap-2 hover:bg-[#353C33] transition whitespace-nowrap"
+                >
+                  {settings.soundEnabled ? (
+                    <Volume2 className="w-4 h-4 text-[#E08E26]" />
+                  ) : (
+                    <VolumeX className="w-4 h-4 text-[#F3EFE6]/60" />
+                  )}
+                  SFX: {settings.soundEnabled ? 'On' : 'Off'}
+                </button>
+
+                {onToggleMusic && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onToggleMusic();
+                      soundFX.configure(
+                        settings.soundEnabled,
+                        settings.soundVolume,
+                        !settings.musicEnabled,
+                        settings.musicVolume
+                      );
+                    }}
+                    className="min-h-[44px] px-3 rounded-lg bg-[#2B3029] border border-[#F3EFE6]/20 text-[#F3EFE6] font-medium text-sm flex items-center justify-center gap-2 hover:bg-[#353C33] transition whitespace-nowrap"
+                  >
+                    <Music
+                      className={`w-4 h-4 ${
+                        settings.musicEnabled ? 'text-[#E08E26]' : 'text-[#F3EFE6]/60'
+                      }`}
+                    />
+                    Music: {settings.musicEnabled ? 'On' : 'Off'}
+                  </button>
                 )}
-                Sound: {settings.soundEnabled ? 'On' : 'Muted'}
-              </button>
+              </div>
 
               <button
                 type="button"

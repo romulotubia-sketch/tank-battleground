@@ -5,6 +5,7 @@ import {
   loadProgression,
   loadSettings,
   resetAllLocalData,
+  resetSettingsToDefault,
   saveProgression,
   saveSettings,
 } from './data/storage';
@@ -21,9 +22,12 @@ import {
   ScreenId,
   TankId,
 } from './types/game';
+import { ArenaSelectionScreen } from './ui/ArenaSelectionScreen';
 import { GameHUD } from './ui/GameHUD';
+import { GarageScreen } from './ui/GarageScreen';
 import { HowToPlayScreen } from './ui/HowToPlayScreen';
 import { MainMenu } from './ui/MainMenu';
+import { MissionsScreen } from './ui/MissionsScreen';
 import { ResultsScreen } from './ui/ResultsScreen';
 import { SettingsScreen } from './ui/SettingsScreen';
 import { TankRosterScreen } from './ui/TankRosterScreen';
@@ -31,6 +35,7 @@ import { enterLandscapeFullscreen, useViewportOrientation } from './utils/orient
 
 export default function App() {
   const [screen, setScreen] = useState<ScreenId>('MAIN_MENU');
+  const [previousMenuScreen, setPreviousMenuScreen] = useState<ScreenId>('MAIN_MENU');
   const [progression, setProgression] = useState<PlayerProgression>(() => loadProgression());
   const [settings, setSettings] = useState<GameSettings>(() => loadSettings());
   const [lastResult, setLastResult] = useState<MatchResult | null>(null);
@@ -51,8 +56,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    soundFX.configure(settings.soundEnabled, settings.soundVolume);
+    soundFX.configure(
+      settings.soundEnabled,
+      settings.soundVolume,
+      settings.musicEnabled,
+      settings.musicVolume
+    );
   }, [settings]);
+
+  useEffect(() => {
+    soundFX.setMusicMode(
+      screen === 'IN_GAME' ? 'battle' : screen === 'RESULTS' ? 'none' : 'menu'
+    );
+  }, [screen]);
 
   useEffect(() => {
     return gameBridge.onMatchEnd((result) => {
@@ -61,6 +77,22 @@ export default function App() {
       setScreen('RESULTS');
     });
   }, []);
+
+  const navigateTo = useCallback(
+    (target: ScreenId) => {
+      if (target === screen) return;
+      if (
+        screen === 'MAIN_MENU' ||
+        screen === 'GARAGE' ||
+        screen === 'TANK_COLLECTION' ||
+        screen === 'ARENA_SELECT'
+      ) {
+        setPreviousMenuScreen(screen);
+      }
+      setScreen(target);
+    },
+    [screen]
+  );
 
   const handleSelectArena = useCallback((arenaId: ArenaId) => {
     setProgression((prev) => {
@@ -72,38 +104,43 @@ export default function App() {
 
   const handleSelectTank = useCallback((tankId: TankId) => {
     setProgression((prev) => {
-      if (!TANK_DEFINITIONS[tankId]?.implemented || !prev.unlockedTanks.includes(tankId)) return prev;
+      if (!TANK_DEFINITIONS[tankId]?.implemented) return prev;
       const next = { ...prev, selectedTank: tankId };
       saveProgression(next);
       return next;
     });
   }, []);
 
-  const handleUnlockTank = useCallback((tankId: TankId) => {
-    setProgression((prev) => {
-      if (prev.unlockedTanks.includes(tankId)) return prev;
-      const def = TANK_DEFINITIONS[tankId];
-      if (!def || !def.implemented || prev.scrap < def.unlockCost) return prev;
-      const next: PlayerProgression = {
-        ...prev,
-        scrap: prev.scrap - def.unlockCost,
-        unlockedTanks: [...prev.unlockedTanks, tankId],
-        selectedTank: tankId,
-      };
-      saveProgression(next);
+  const handleUpdateSettings = useCallback((next: GameSettings) => {
+    const normalized: GameSettings = {
+      ...next,
+      lowDetailMode: next.graphicsQuality === 'low',
+    };
+    setSettings(normalized);
+    saveSettings(normalized);
+    gameBridge.emitSettingsChange(normalized);
+  }, []);
+
+  const handleResetSettings = useCallback(() => {
+    const defaults = resetSettingsToDefault();
+    setSettings(defaults);
+    gameBridge.emitSettingsChange(defaults);
+  }, []);
+
+  const handleToggleSound = useCallback(() => {
+    soundFX.unlockFromUserGesture();
+    setSettings((prev) => {
+      const next = { ...prev, soundEnabled: !prev.soundEnabled };
+      saveSettings(next);
+      gameBridge.emitSettingsChange(next);
       return next;
     });
   }, []);
 
-  const handleUpdateSettings = useCallback((next: GameSettings) => {
-    setSettings(next);
-    saveSettings(next);
-    gameBridge.emitSettingsChange(next);
-  }, []);
-
-  const handleToggleSound = useCallback(() => {
+  const handleToggleMusic = useCallback(() => {
+    soundFX.unlockFromUserGesture();
     setSettings((prev) => {
-      const next = { ...prev, soundEnabled: !prev.soundEnabled };
+      const next = { ...prev, musicEnabled: !prev.musicEnabled };
       saveSettings(next);
       gameBridge.emitSettingsChange(next);
       return next;
@@ -114,6 +151,7 @@ export default function App() {
     const fresh = resetAllLocalData();
     setProgression(fresh.progression);
     setSettings(fresh.settings);
+    gameBridge.emitSettingsChange(fresh.settings);
   }, []);
 
   const launchConfig: MatchLaunchConfig = useMemo(
@@ -131,6 +169,7 @@ export default function App() {
 
   const startBattle = useCallback(
     (tankIdOverride?: TankId) => {
+      soundFX.unlockFromUserGesture();
       const targetTankId =
         tankIdOverride && TANK_DEFINITIONS[tankIdOverride]?.implemented
           ? tankIdOverride
@@ -142,16 +181,15 @@ export default function App() {
       };
       gameBridge.setLaunchConfig(effectiveConfig);
       setLastResult(null);
+      gameBridge.clearLastHudSnapshot();
       if (screen === 'RESULTS') {
         setScreen('IN_GAME');
         gameBridge.sendCommand('RESTART');
       } else {
-        gameBridge.clearLastHudSnapshot();
         setMatchInstanceKey((k) => k + 1);
         setScreen('IN_GAME');
       }
       if (isTouchDevice) {
-        // Attempt native landscape lock when user starts battle via tap
         enterLandscapeFullscreen();
       }
     },
@@ -163,27 +201,51 @@ export default function App() {
       {screen === 'MAIN_MENU' && (
         <MainMenu
           progression={progression}
-          onNavigate={setScreen}
-          onSelectArena={handleSelectArena}
+          onNavigate={navigateTo}
+          onStartBattle={() => startBattle()}
+        />
+      )}
+
+      {screen === 'GARAGE' && (
+        <GarageScreen
+          progression={progression}
+          onSelectTank={handleSelectTank}
+          onOpenCollection={() => navigateTo('TANK_COLLECTION')}
+          onBack={() =>
+            setScreen(previousMenuScreen === 'TANK_COLLECTION' ? 'TANK_COLLECTION' : 'MAIN_MENU')
+          }
           onStartBattle={startBattle}
         />
       )}
 
-      {(screen === 'TANK_SELECT' || screen === 'TANK_COLLECTION') && (
+      {screen === 'TANK_COLLECTION' && (
         <TankRosterScreen
-          mode={screen === 'TANK_COLLECTION' ? 'collection' : 'select'}
           progression={progression}
           onSelectTank={handleSelectTank}
-          onUnlockTank={handleUnlockTank}
-          onBack={() => setScreen('MAIN_MENU')}
+          onOpenGarage={() => navigateTo('GARAGE')}
+          onBack={() => setScreen(previousMenuScreen === 'GARAGE' ? 'GARAGE' : 'MAIN_MENU')}
           onStartBattle={startBattle}
         />
+      )}
+
+      {screen === 'ARENA_SELECT' && (
+        <ArenaSelectionScreen
+          selectedArena={progression.selectedArena}
+          onSelectArena={handleSelectArena}
+          onBack={() => setScreen('MAIN_MENU')}
+          onStartBattle={() => startBattle()}
+        />
+      )}
+
+      {screen === 'MISSIONS' && (
+        <MissionsScreen onBack={() => setScreen('MAIN_MENU')} />
       )}
 
       {screen === 'SETTINGS' && (
         <SettingsScreen
           settings={settings}
           onUpdateSettings={handleUpdateSettings}
+          onResetSettings={handleResetSettings}
           onResetProgress={handleResetProgress}
           onBack={() => setScreen('MAIN_MENU')}
         />
@@ -204,6 +266,7 @@ export default function App() {
               settings={settings}
               selectedTankId={progression.selectedTank}
               onToggleSound={handleToggleSound}
+              onToggleMusic={handleToggleMusic}
               onExitToMenu={() => setScreen('MAIN_MENU')}
               onRestartMatch={() => {
                 // ArenaScene handles scene.restart internally via gameBridge

@@ -1,20 +1,18 @@
 import Phaser from 'phaser';
-import { POWERUP_DEFINITIONS } from '../../data/powerups';
 import {
   getEffectiveTankMaxHp,
   getEffectiveTankProjectileRange,
   getEffectiveTankReloadSec,
 } from '../../data/tanks';
 import { AIPersonality, PowerupId, TankDefinition } from '../../types/game';
+import {
+  ApplyPickupResult,
+  DamageSource,
+  TemporaryEffectManager,
+} from '../powerups/TemporaryEffectManager';
 import { EffectsPool } from '../systems/EffectsPool';
 import { soundFX } from '../systems/SoundFX';
 import { ObstacleEntity } from './ObstacleEntity';
-
-export interface ActiveBuffState {
-  id: PowerupId;
-  remainingSec: number;
-  totalSec: number;
-}
 
 export class TankEntity {
   readonly id: string;
@@ -32,8 +30,6 @@ export class TankEntity {
 
   hp: number;
   maxHp: number;
-  shieldHp = 0;
-  maxShieldHp = 0;
   alive = true;
 
   eliminations = 0;
@@ -48,30 +44,67 @@ export class TankEntity {
   abilityCooldownTimer = 0;
   abilityActiveTimer = 0;
   spawnProtectionTimer = 0;
-  slowTimer = 0;
-  slowFactor = 1;
+  staticSlowTimer = 0;
+  staticSlowFactor = 1;
+  empSlowTimer = 0;
+  empSlowFactor = 1;
+  recentAttackTimer = 0;
   concealed = false;
   phaseCloaked = false;
 
-  readonly buffs = new Map<PowerupId, ActiveBuffState>();
+  readonly effectsManager = new TemporaryEffectManager();
+  get buffs() {
+    return this.effectsManager.activeBuffs;
+  }
+  get shieldHp(): number {
+    return this.effectsManager.shieldHp;
+  }
+  set shieldHp(val: number) {
+    this.effectsManager.shieldHp = val;
+  }
+  get maxShieldHp(): number {
+    return this.effectsManager.maxShieldHp;
+  }
+  set maxShieldHp(val: number) {
+    this.effectsManager.maxShieldHp = val;
+  }
+  get mineCharges(): number {
+    return this.effectsManager.mineCharges;
+  }
+  get mineDeployCooldown(): number {
+    return this.effectsManager.mineDeployCooldown;
+  }
 
   readonly hullSprite: Phaser.GameObjects.Image;
   readonly turretSprite: Phaser.GameObjects.Image;
   private readonly playerRing: Phaser.GameObjects.Arc | null = null;
   private readonly rapidFireRing: Phaser.GameObjects.Arc;
   private readonly afterburnerRing: Phaser.GameObjects.Arc;
+  private readonly phaseRing: Phaser.GameObjects.Arc;
+  private readonly slowRing: Phaser.GameObjects.Arc;
   private readonly shieldRing: Phaser.GameObjects.Arc;
+  private readonly powerupAuraRing: Phaser.GameObjects.Arc;
+  private readonly radarSweepRing: Phaser.GameObjects.Arc | null = null;
+  private readonly radarRevealRing: Phaser.GameObjects.Arc | null = null;
   private readonly barrageReticle: Phaser.GameObjects.Arc | null = null;
   private readonly barBg: Phaser.GameObjects.Rectangle;
+  private readonly barTrailFill: Phaser.GameObjects.Rectangle;
   private readonly barFill: Phaser.GameObjects.Rectangle;
   private readonly reloadBarBg: Phaser.GameObjects.Rectangle;
   private readonly reloadBarFill: Phaser.GameObjects.Rectangle;
   private readonly shieldFill: Phaser.GameObjects.Rectangle;
   private readonly nameLabel: Phaser.GameObjects.Text;
+  private readonly slowLabel: Phaser.GameObjects.Text;
 
   private dustTimer = 0;
+  private treadMarkTimer = 0;
   private afterburnerExhaustTimer = 0;
-  private scene: Phaser.Scene;
+  private visualClock = 0;
+  private fireRecoilOffset = 0;
+  private hitFlashTimer = 0;
+  private hitFlashTint = 0xff9999;
+  private damageTrailRatio = 1;
+  private wasConcealed = false;
 
   constructor(
     scene: Phaser.Scene,
@@ -84,7 +117,6 @@ export class TankEntity {
     angle: number,
     personality: AIPersonality = 'tactical'
   ) {
-    this.scene = scene;
     this.id = id;
     this.displayName = displayName;
     this.isPlayer = isPlayer;
@@ -123,6 +155,16 @@ export class TankEntity {
     this.afterburnerRing.setDepth(13);
     this.afterburnerRing.setVisible(false);
 
+    this.phaseRing = scene.add.circle(x, y, definition.stats.bodyRadius + 11, 0xa78bfa, 0.14);
+    this.phaseRing.setStrokeStyle(2.5, 0xc4b5fd, 0.9);
+    this.phaseRing.setDepth(13);
+    this.phaseRing.setVisible(false);
+
+    this.slowRing = scene.add.circle(x, y, definition.stats.bodyRadius + 11, 0x22d3ee, 0.16);
+    this.slowRing.setStrokeStyle(2.8, 0x22d3ee, 0.95);
+    this.slowRing.setDepth(16);
+    this.slowRing.setVisible(false);
+
     this.hullSprite = scene.add.image(x, y, `tank_hull_${definition.id}`);
     this.hullSprite.setRotation(angle);
     this.hullSprite.setDepth(14);
@@ -140,8 +182,29 @@ export class TankEntity {
     this.shieldRing.setDepth(16);
     this.shieldRing.setVisible(false);
 
-    // Overhead status bar
+    this.powerupAuraRing = scene.add.circle(x, y, definition.stats.bodyRadius + 15, 0xf59e0b, 0.08);
+    this.powerupAuraRing.setStrokeStyle(2.2, 0xf59e0b, 0.85);
+    this.powerupAuraRing.setDepth(12);
+    this.powerupAuraRing.setVisible(false);
+
+    if (isPlayer) {
+      this.radarSweepRing = scene.add.circle(x, y, 42, 0x10b981, 0.05);
+      this.radarSweepRing.setStrokeStyle(2, 0x10b981, 0.55);
+      this.radarSweepRing.setDepth(7);
+      this.radarSweepRing.setVisible(false);
+    } else {
+      this.radarRevealRing = scene.add.circle(x, y, definition.stats.bodyRadius + 16, 0x10b981, 0.12);
+      this.radarRevealRing.setStrokeStyle(2.6, 0x34d399, 0.92);
+      this.radarRevealRing.setDepth(21);
+      this.radarRevealRing.setVisible(false);
+    }
+
+    // Overhead status bar with smooth damage trail
     this.barBg = scene.add.rectangle(x, y - 34, 46, 6, 0x141714, 0.9).setDepth(24);
+    this.barTrailFill = scene.add
+      .rectangle(x - 22, y - 34, 44, 4, 0xfef08a, 0.9)
+      .setOrigin(0, 0.5)
+      .setDepth(24);
     this.barFill = scene.add
       .rectangle(x - 22, y - 34, 44, 4, isPlayer ? 0x22c55e : 0xef4444, 1)
       .setOrigin(0, 0.5)
@@ -172,6 +235,19 @@ export class TankEntity {
       })
       .setOrigin(0.5)
       .setDepth(25);
+
+    this.slowLabel = scene.add
+      .text(x, y - 59, '⚡ SLOWED', {
+        fontFamily: '"Barlow Condensed", sans-serif',
+        fontSize: '11px',
+        fontStyle: 'bold',
+        color: '#67E8F9',
+        stroke: '#083344',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5)
+      .setDepth(26)
+      .setVisible(false);
   }
 
   get radius(): number {
@@ -198,26 +274,58 @@ export class TankEntity {
     };
   }
 
+  triggerFireRecoil(): void {
+    const kick =
+      this.definition.id === 'artillery'
+        ? 8.5
+        : this.definition.id === 'fortress'
+        ? 6.5
+        : 4.8;
+    this.fireRecoilOffset = Math.max(this.fireRecoilOffset, kick);
+  }
+
+  get isSlowed(): boolean {
+    return this.staticSlowTimer > 0 || this.empSlowTimer > 0;
+  }
+
+  get isEmpDisrupted(): boolean {
+    return this.empSlowTimer > 0;
+  }
+
+  get slowRemainingSec(): number {
+    return Math.max(this.staticSlowTimer, this.empSlowTimer);
+  }
+
+  getEffectiveDetectionMultiplier(): number {
+    if (this.definition.id !== 'phantom') {
+      return this.definition.stats.detectionMultiplier;
+    }
+    return (
+      this.definition.passiveAbility.detectionMultiplier ??
+      this.definition.stats.detectionMultiplier
+    );
+  }
+
   getEffectiveMoveSpeed(): number {
     const passiveBonus = (this.definition.passiveAbility.moveSpeedMultiplier ?? 1) - 1;
     const activeBonus =
       this.abilityActiveTimer > 0 && this.definition.activeAbility.speedBoostMultiplier
         ? this.definition.activeAbility.speedBoostMultiplier - 1
-        : this.abilityActiveTimer > 0 && this.definition.id === 'phantom'
-        ? 0.35
         : 0;
-    const powerupBonus = this.buffs.has('speed_boost') ? 0.35 : 0;
-    const mult = 1 + passiveBonus + activeBonus + powerupBonus;
-    const slowMult = this.slowTimer > 0 ? this.slowFactor : 1;
+    const mult = this.effectsManager.getMoveSpeedMultiplier(passiveBonus, activeBonus);
+    const slowMult = Math.min(
+      this.staticSlowTimer > 0 ? this.staticSlowFactor : 1,
+      this.empSlowTimer > 0 ? this.empSlowFactor : 1
+    );
     return this.definition.stats.moveSpeed * mult * slowMult;
   }
 
   getEffectiveFireIntervalSec(): number {
-    let divisor = 1;
-    if (this.buffs.has('rapid_fire')) divisor *= 1.45;
-    if (this.abilityActiveTimer > 0 && this.definition.id === 'assault') {
-      divisor *= 2.0;
-    }
+    const activeMult =
+      this.abilityActiveTimer > 0 && this.definition.activeAbility.fireRateMultiplier
+        ? this.definition.activeAbility.fireRateMultiplier
+        : 1;
+    const divisor = this.effectsManager.getFireRateMultiplier(activeMult);
     return this.definition.stats.reloadSec / divisor;
   }
 
@@ -250,42 +358,78 @@ export class TankEntity {
   }
 
   getEffectiveDamage(): number {
-    let mult = 1;
-    if (this.buffs.has('heavy_shell')) mult *= 1.45;
+    const mult = this.effectsManager.getDamageMultiplier();
     return Math.round(this.definition.stats.projectileDamage * mult);
   }
 
   hasBuff(id: PowerupId): boolean {
-    return this.buffs.has(id);
+    return this.effectsManager.hasBuff(id);
   }
 
-  activateShield(amount: number): void {
-    this.shieldHp = Math.max(this.shieldHp, amount);
-    this.maxShieldHp = Math.max(this.maxShieldHp, this.shieldHp, amount);
+  activateShield(amount: number, source: 'powerup' | 'ability' = 'ability'): void {
+    this.effectsManager.activateShield(amount, source);
   }
 
-  applyBuff(id: PowerupId): void {
-    const def = POWERUP_DEFINITIONS[id];
-    if (id === 'repair_kit') {
-      this.hp = Math.min(this.maxHp, this.hp + 35);
-      return;
-    }
-    if (id === 'shield') {
-      this.activateShield(50);
-    }
-    if (def.durationSec > 0) {
-      // Duplicate temporary effects refresh their duration
-      this.buffs.set(id, {
-        id,
-        remainingSec: def.durationSec,
-        totalSec: def.durationSec,
-      });
+  applyBuff(id: PowerupId): ApplyPickupResult {
+    return this.effectsManager.applyPowerup(id, this.alive, this.hp, this.maxHp, (nextHp) => {
+      this.hp = nextHp;
+    });
+  }
+
+  consumeMineCharge(): boolean {
+    if (!this.alive) return false;
+    return this.effectsManager.consumeMineCharge();
+  }
+
+  clearTemporaryEffects(): void {
+    this.effectsManager.clearAll();
+    this.staticSlowTimer = 0;
+    this.staticSlowFactor = 1;
+    this.empSlowTimer = 0;
+    this.empSlowFactor = 1;
+    this.phaseCloaked = false;
+    this.powerupAuraRing.setVisible(false);
+    this.shieldRing.setVisible(false);
+    this.shieldFill.setVisible(false);
+    if (this.radarSweepRing) this.radarSweepRing.setVisible(false);
+    if (this.radarRevealRing) this.radarRevealRing.setVisible(false);
+  }
+
+  applySlow(factor: number, durationSec: number, source: 'static' | 'emp' = 'static'): void {
+    const clampedFactor = Math.min(1, Math.max(0.2, factor));
+    const safeDuration = Math.max(0, durationSec);
+    if (safeDuration <= 0) return;
+
+    if (source === 'emp') {
+      // Refresh EMP disruption duration without stacking multiplicatively
+      this.empSlowFactor = clampedFactor;
+      this.empSlowTimer = safeDuration;
+    } else {
+      // Refresh Static Charge slow duration without stacking multiplicatively
+      this.staticSlowFactor = clampedFactor;
+      this.staticSlowTimer = safeDuration;
     }
   }
 
-  applySlow(factor: number, durationSec: number): void {
-    this.slowFactor = Math.min(this.slowFactor, factor);
-    this.slowTimer = Math.max(this.slowTimer, durationSec);
+  interruptMovementAbilities(effects?: EffectsPool): boolean {
+    if (!this.alive) return false;
+    let interrupted = false;
+
+    // Interrupt active movement-based tank abilities (e.g., Afterburner, Phase Shift) cleanly
+    if (this.abilityActiveTimer > 0 && this.definition.activeAbility.speedBoostMultiplier) {
+      this.abilityActiveTimer = 0;
+      if (this.phaseCloaked) {
+        this.phaseCloaked = false;
+        effects?.spawnPhaseShift(this.x, this.y, false);
+        if (this.isPlayer) soundFX.playPhaseEnd();
+      }
+      interrupted = true;
+    }
+
+    // Damp current drivetrain momentum briefly without disabling combat
+    this.vx *= 0.35;
+    this.vy *= 0.35;
+    return interrupted;
   }
 
   updateMovement(
@@ -331,10 +475,21 @@ export class TankEntity {
 
       this.dustTimer -= dt;
       if (this.dustTimer <= 0) {
-        this.dustTimer = this.definition.id === 'scout' ? 0.07 : 0.09;
+        this.dustTimer = this.definition.id === 'scout' ? 0.07 : 0.095;
         effects.spawnTreadDust(
           this.x - Math.cos(this.hullAngle) * 18,
           this.y - Math.sin(this.hullAngle) * 18
+        );
+      }
+
+      this.treadMarkTimer -= dt;
+      if (this.treadMarkTimer <= 0) {
+        this.treadMarkTimer = this.definition.id === 'scout' ? 0.11 : 0.145;
+        effects.spawnTreadMark(
+          this.x - Math.cos(this.hullAngle) * 10,
+          this.y - Math.sin(this.hullAngle) * 10,
+          this.hullAngle,
+          this.definition.id === 'fortress'
         );
       }
 
@@ -356,6 +511,10 @@ export class TankEntity {
     this.y += this.vy * dt;
 
     this.resolveBoundsAndObstacles(obstacles, arenaWidth, arenaHeight);
+    if (this.concealed && !this.wasConcealed) {
+      effects.spawnLeafRustle(this.x, this.y);
+    }
+    this.wasConcealed = this.concealed;
   }
 
   resolveBoundsAndObstacles(
@@ -408,14 +567,22 @@ export class TankEntity {
     this.concealed = inBush;
   }
 
-  aimTurretToward(targetAngle: number, dt: number): void {
+  aimTurretToward(targetAngle: number, dt: number, sensitivity = 1): void {
     if (!this.alive) return;
     const diff = Phaser.Math.Angle.Wrap(targetAngle - this.turretAngle);
-    const maxRot = 14 * dt;
+    const maxRot = 14 * Math.min(1.6, Math.max(0.5, sensitivity)) * dt;
     this.turretAngle += Phaser.Math.Clamp(diff, -maxRot, maxRot);
   }
 
-  updateTimersAndVisuals(dt: number, playerHasRadar: boolean, prepPhase = false): void {
+  updateTimersAndVisuals(
+    dt: number,
+    playerHasRadar: boolean,
+    prepPhase = false,
+    effects?: EffectsPool,
+    playerX = 0,
+    playerY = 0,
+    playerRadarRadius = 0
+  ): void {
     if (!this.alive) return;
 
     if (!this.isPlayer && prepPhase) {
@@ -423,7 +590,10 @@ export class TankEntity {
       return;
     }
 
+    this.visualClock += dt;
+
     if (this.fireCooldownTimer > 0) this.fireCooldownTimer = Math.max(0, this.fireCooldownTimer - dt);
+    if (this.recentAttackTimer > 0) this.recentAttackTimer = Math.max(0, this.recentAttackTimer - dt);
     if (this.isReloading && dt > 0) {
       this.magazineReloadTimer = Math.max(0, this.magazineReloadTimer - dt);
       if (this.magazineReloadTimer <= 0) {
@@ -440,7 +610,7 @@ export class TankEntity {
       this.spawnProtectionTimer = Math.max(0, this.spawnProtectionTimer - dt);
     }
 
-    const cdrMult = this.buffs.has('cooldown_boost') ? 2.0 : 1.0;
+    const cdrMult = this.effectsManager.getCooldownRecoveryMultiplier();
     if (this.abilityCooldownTimer > 0) {
       this.abilityCooldownTimer = Math.max(0, this.abilityCooldownTimer - dt * cdrMult);
     }
@@ -448,37 +618,81 @@ export class TankEntity {
     if (this.abilityActiveTimer > 0) {
       this.abilityActiveTimer = Math.max(0, this.abilityActiveTimer - dt);
       if (this.abilityActiveTimer === 0) {
+        const wasPhased = this.phaseCloaked;
         this.phaseCloaked = false;
-        if (this.definition.id === 'fortress') {
-          // Keep shield only if shield powerup isn't active
-          if (!this.buffs.has('shield')) {
-            this.shieldHp = 0;
-            this.maxShieldHp = 0;
-          }
+        if (wasPhased) {
+          effects?.spawnPhaseShift(this.x, this.y, false);
+          if (this.isPlayer) soundFX.playPhaseEnd();
+        } else if (this.definition.id === 'fortress') {
+          this.effectsManager.onAbilityShieldExpired();
+          effects?.spawnRing(this.x, this.y, this.radius + 22, 0x38bdf8, 0.24);
+          if (this.isPlayer) soundFX.playAbilityExpire('fortress');
+        } else if (this.definition.id === 'assault') {
+          effects?.spawnRing(this.x, this.y, this.radius + 20, 0xf59e0b, 0.2);
+          if (this.isPlayer) soundFX.playAbilityExpire('assault');
+        } else if (this.definition.id === 'scout') {
+          effects?.spawnRing(this.x, this.y, this.radius + 18, 0xfacc15, 0.2);
+          if (this.isPlayer) soundFX.playAbilityExpire('scout');
         }
+      }
+    } else if (this.phaseCloaked) {
+      // Safety invariant: phased state can never outlive abilityActiveTimer
+      this.phaseCloaked = false;
+    }
+
+    if (this.staticSlowTimer > 0) {
+      this.staticSlowTimer = Math.max(0, this.staticSlowTimer - dt);
+      if (this.staticSlowTimer === 0) this.staticSlowFactor = 1;
+    }
+    if (this.empSlowTimer > 0) {
+      this.empSlowTimer = Math.max(0, this.empSlowTimer - dt);
+      if (this.empSlowTimer === 0) this.empSlowFactor = 1;
+    }
+
+    const fortressShieldActive = this.definition.id === 'fortress' && this.abilityActiveTimer > 0;
+    this.effectsManager.update(dt, fortressShieldActive);
+
+    if (this.fireRecoilOffset > 0) {
+      this.fireRecoilOffset = Math.max(0, this.fireRecoilOffset - 46 * dt);
+    }
+    if (this.hitFlashTimer > 0) {
+      this.hitFlashTimer = Math.max(0, this.hitFlashTimer - dt);
+    }
+
+    const spd = Math.hypot(this.vx, this.vy);
+    const engineVib =
+      spd > 45 && !prepPhase ? 1 + Math.sin(this.visualClock * 26) * 0.012 : 1;
+    const hitScale = this.hitFlashTimer > 0 ? 1.045 : 1;
+
+    // Sync sprite transforms (hull & turret remain completely independent)
+    const recoilX = Math.cos(this.turretAngle) * this.fireRecoilOffset;
+    const recoilY = Math.sin(this.turretAngle) * this.fireRecoilOffset;
+    this.hullSprite
+      .setVisible(true)
+      .setPosition(this.x, this.y)
+      .setRotation(this.hullAngle)
+      .setScale(engineVib * hitScale);
+    this.turretSprite
+      .setVisible(true)
+      .setPosition(this.x - recoilX, this.y - recoilY)
+      .setRotation(this.turretAngle)
+      .setScale(hitScale);
+
+    // Hit flash & Rapid Fire barrel glow tinting (zero timer allocations)
+    if (this.hitFlashTimer > 0) {
+      this.hullSprite.setTint(this.hitFlashTint);
+      this.turretSprite.setTint(this.hitFlashTint);
+    } else {
+      if (this.isPlayer) this.hullSprite.clearTint();
+      else this.hullSprite.setTint(0xf2e8e4);
+
+      if (this.definition.id === 'assault' && this.abilityActiveTimer > 0) {
+        this.turretSprite.setTint(0xfde68a);
+      } else {
+        this.turretSprite.clearTint();
       }
     }
 
-    if (this.slowTimer > 0) {
-      this.slowTimer = Math.max(0, this.slowTimer - dt);
-      if (this.slowTimer === 0) this.slowFactor = 1;
-    }
-
-    // Update buffs
-    for (const [key, buff] of this.buffs.entries()) {
-      buff.remainingSec -= dt;
-      if (buff.remainingSec <= 0) {
-        this.buffs.delete(key);
-        if (key === 'shield' && !(this.definition.id === 'fortress' && this.abilityActiveTimer > 0)) {
-          this.shieldHp = 0;
-          this.maxShieldHp = 0;
-        }
-      }
-    }
-
-    // Sync sprite transforms
-    this.hullSprite.setVisible(true).setPosition(this.x, this.y).setRotation(this.hullAngle);
-    this.turretSprite.setVisible(true).setPosition(this.x, this.y).setRotation(this.turretAngle);
     if (this.playerRing) {
       this.playerRing.setVisible(true).setPosition(this.x, this.y);
       if (this.spawnProtectionTimer > 0) {
@@ -488,18 +702,29 @@ export class TankEntity {
       }
     }
 
-    // Concealment, Phase & Spawn Protection visibility
-    const hiddenFromPlayer = !this.isPlayer && !playerHasRadar && (this.concealed || this.phaseCloaked);
+    // Concealment, Phase, Radar reveal & Spawn Protection visibility
+    const radarRevealed =
+      !this.isPlayer &&
+      !prepPhase &&
+      playerHasRadar &&
+      playerRadarRadius > 0 &&
+      Math.hypot(this.x - playerX, this.y - playerY) <= playerRadarRadius;
+    const hiddenFromPlayer =
+      !this.isPlayer && !radarRevealed && (this.concealed || this.phaseCloaked);
     const spawnPulse =
       this.spawnProtectionTimer > 0
         ? 0.72 + 0.28 * Math.abs(Math.sin(this.spawnProtectionTimer * 10))
         : 1;
     const baseAlpha = this.isPlayer
-      ? this.concealed || this.phaseCloaked
+      ? this.phaseCloaked
+        ? 0.38
+        : this.concealed
         ? 0.55
         : 1
       : hiddenFromPlayer
       ? 0.16
+      : this.phaseCloaked
+      ? 0.34
       : 1;
     const targetAlpha = baseAlpha * spawnPulse;
 
@@ -532,6 +757,18 @@ export class TankEntity {
       this.afterburnerRing.setVisible(false);
     }
 
+    // Phantom Phase Shift visual ring
+    const phaseActive = this.phaseCloaked && (!hiddenFromPlayer || this.isPlayer);
+    if (phaseActive) {
+      const pulseAlpha = 0.45 + 0.35 * Math.abs(Math.sin(this.abilityActiveTimer * 10));
+      this.phaseRing
+        .setPosition(this.x, this.y)
+        .setAlpha(pulseAlpha)
+        .setVisible(true);
+    } else {
+      this.phaseRing.setVisible(false);
+    }
+
     // Shield ring
     if (this.shieldHp > 0) {
       const shieldPulse =
@@ -546,10 +783,19 @@ export class TankEntity {
       this.shieldRing.setVisible(false);
     }
 
-    // Health bar & reload progress bar & name
+    // Health bar, smooth damage trail, reload progress bar & name
     const showHudBar = !hiddenFromPlayer;
     this.barBg.setPosition(this.x, this.y - 34).setVisible(showHudBar);
     const hpRatio = Phaser.Math.Clamp(this.hp / this.maxHp, 0, 1);
+    if (this.damageTrailRatio < hpRatio) {
+      this.damageTrailRatio = hpRatio;
+    } else if (this.damageTrailRatio > hpRatio) {
+      this.damageTrailRatio = Math.max(hpRatio, this.damageTrailRatio - dt * 0.95);
+    }
+    this.barTrailFill
+      .setPosition(this.x - 22, this.y - 34)
+      .setDisplaySize(Math.max(0, 44 * this.damageTrailRatio), 4)
+      .setVisible(showHudBar && this.damageTrailRatio > hpRatio + 0.01);
     this.barFill
       .setPosition(this.x - 22, this.y - 34)
       .setDisplaySize(Math.max(0, 44 * hpRatio), 4)
@@ -582,10 +828,87 @@ export class TankEntity {
       this.shieldFill.setVisible(false);
     }
 
+    // Distinct visual aura for active offensive / utility powerups
+    const auraColor = this.hasBuff('heavy_shell')
+      ? 0xef4444
+      : this.hasBuff('rapid_fire')
+      ? 0xf59e0b
+      : this.hasBuff('multi_shot')
+      ? 0xec4899
+      : this.hasBuff('piercing_shell')
+      ? 0xa855f7
+      : this.hasBuff('speed_boost')
+      ? 0x06b6d4
+      : this.hasBuff('cooldown_boost')
+      ? 0xeab308
+      : null;
+
+    if (auraColor !== null && !hiddenFromPlayer) {
+      const auraPulse = 0.55 + 0.35 * Math.abs(Math.sin(this.visualClock * 8));
+      this.powerupAuraRing
+        .setPosition(this.x, this.y)
+        .setStrokeStyle(2.2, auraColor, auraPulse)
+        .setFillStyle(auraColor, 0.08)
+        .setVisible(true);
+    } else {
+      this.powerupAuraRing.setVisible(false);
+    }
+
+    // Radar pulse ring on player (only after preparation countdown ends)
+    if (this.radarSweepRing) {
+      if (!prepPhase && this.hasBuff('radar')) {
+        const sweepPhase = (this.visualClock * 0.95) % 1;
+        this.radarSweepRing
+          .setPosition(this.x, this.y)
+          .setRadius(40 + sweepPhase * 120)
+          .setAlpha(0.75 * (1 - sweepPhase))
+          .setVisible(true);
+      } else {
+        this.radarSweepRing.setVisible(false);
+      }
+    }
+
+    // Radar detection highlight ring on revealed enemy tanks (strictly disabled before GO)
+    if (this.radarRevealRing) {
+      if (radarRevealed) {
+        const pulse = 0.58 + 0.38 * Math.abs(Math.sin(this.visualClock * 10));
+        this.radarRevealRing
+          .setPosition(this.x, this.y)
+          .setAlpha(pulse)
+          .setVisible(true);
+      } else {
+        this.radarRevealRing.setVisible(false);
+      }
+    }
+
+    // Slow / EMP Disruption visual indicator
+    if (this.isSlowed && !hiddenFromPlayer) {
+      const slowPulse = 0.55 + 0.4 * Math.abs(Math.sin(this.slowRemainingSec * 16));
+      const ringColor = this.isEmpDisrupted ? 0x38bdf8 : 0x22d3ee;
+      this.slowRing
+        .setPosition(this.x, this.y)
+        .setStrokeStyle(2.8, ringColor, slowPulse)
+        .setAlpha(slowPulse)
+        .setVisible(true);
+    } else {
+      this.slowRing.setVisible(false);
+    }
+
     this.nameLabel.setPosition(this.x, this.y - 46).setVisible(showHudBar);
+    if (this.isSlowed && showHudBar) {
+      this.slowLabel
+        .setText(this.isEmpDisrupted ? '⚡ EMP SLOW' : '⚡ STATIC')
+        .setPosition(this.x, this.y - 59)
+        .setVisible(true);
+    } else {
+      this.slowLabel.setVisible(false);
+    }
   }
 
-  takeDamage(amount: number): {
+  takeDamage(
+    amount: number,
+    source: DamageSource = 'projectile'
+  ): {
     killed: boolean;
     actualDamage: number;
     shieldAbsorbed: number;
@@ -595,43 +918,38 @@ export class TankEntity {
       return { killed: false, actualDamage: 0, shieldAbsorbed: 0, shieldBroken: false };
     }
 
-    // Phantom Phase Shift grants 50% evasion damage reduction
-    let dmg = this.phaseCloaked ? Math.round(amount * 0.5) : amount;
-    let absorbed = 0;
-    let shieldBroken = false;
-
-    if (this.shieldHp > 0) {
-      absorbed = Math.min(this.shieldHp, dmg);
-      this.shieldHp -= absorbed;
-      dmg -= absorbed;
-      if (this.shieldHp <= 0) {
-        this.shieldHp = 0;
-        this.maxShieldHp = 0;
-        shieldBroken = true;
-        if (this.definition.id === 'fortress' && this.abilityActiveTimer > 0 && !this.buffs.has('shield')) {
-          this.abilityActiveTimer = 0;
-        }
-      }
+    // Shield absorbs incoming damage before Phantom Phase Shift hull reduction (prevents EHP inflation)
+    const shieldRes = this.effectsManager.absorbIncomingDamage(amount, source);
+    const absorbed = shieldRes.absorbed;
+    const shieldBroken = shieldRes.broken;
+    if (shieldBroken && this.definition.id === 'fortress' && this.abilityActiveTimer > 0) {
+      this.abilityActiveTimer = 0;
     }
+
+    // Phantom Phase Shift applies configurable incoming damage reduction to damage reaching hull
+    const phaseDamageMult = this.definition.activeAbility.phaseDamageMultiplier ?? 0.4;
+    const dmg = this.phaseCloaked
+      ? Math.round(shieldRes.remainingDamage * phaseDamageMult)
+      : shieldRes.remainingDamage;
 
     let hullLost = 0;
     if (dmg > 0) {
       const prevHp = this.hp;
       this.hp = Math.max(0, this.hp - dmg);
       hullLost = prevHp - this.hp;
-      this.hullSprite.setTint(0xff9999);
-      this.scene.time.delayedCall(75, () => {
-        if (this.alive) {
-          if (this.isPlayer) this.hullSprite.clearTint();
-          else this.hullSprite.setTint(0xf2e8e4);
-        }
-      });
+      this.hitFlashTimer = 0.085;
+      this.hitFlashTint = 0xff9999;
+    } else if (absorbed > 0) {
+      this.hitFlashTimer = 0.075;
+      this.hitFlashTint = 0x93c5fd;
     }
 
     const totalApplied = Math.round(absorbed + hullLost);
 
     if (this.hp <= 0) {
       this.alive = false;
+      this.clearTemporaryEffects();
+      this.recentAttackTimer = 0;
       this.hideAllVisuals();
       return {
         killed: true,
@@ -654,30 +972,45 @@ export class TankEntity {
     this.turretSprite.setVisible(false);
     this.rapidFireRing.setVisible(false);
     this.afterburnerRing.setVisible(false);
+    this.phaseRing.setVisible(false);
+    this.slowRing.setVisible(false);
     this.shieldRing.setVisible(false);
+    this.powerupAuraRing.setVisible(false);
     this.barBg.setVisible(false);
+    this.barTrailFill.setVisible(false);
     this.barFill.setVisible(false);
     this.reloadBarBg.setVisible(false);
     this.reloadBarFill.setVisible(false);
     this.shieldFill.setVisible(false);
     this.nameLabel.setVisible(false);
+    this.slowLabel.setVisible(false);
     if (this.playerRing) this.playerRing.setVisible(false);
     if (this.barrageReticle) this.barrageReticle.setVisible(false);
+    if (this.radarSweepRing) this.radarSweepRing.setVisible(false);
+    if (this.radarRevealRing) this.radarRevealRing.setVisible(false);
   }
 
   destroy(): void {
+    this.clearTemporaryEffects();
     this.hullSprite.destroy();
     this.turretSprite.destroy();
     this.rapidFireRing.destroy();
     this.afterburnerRing.destroy();
+    this.phaseRing.destroy();
+    this.slowRing.destroy();
     this.shieldRing.destroy();
+    this.powerupAuraRing.destroy();
     this.barBg.destroy();
+    this.barTrailFill.destroy();
     this.barFill.destroy();
     this.reloadBarBg.destroy();
     this.reloadBarFill.destroy();
     this.shieldFill.destroy();
     this.nameLabel.destroy();
+    this.slowLabel.destroy();
     if (this.playerRing) this.playerRing.destroy();
     if (this.barrageReticle) this.barrageReticle.destroy();
+    if (this.radarSweepRing) this.radarSweepRing.destroy();
+    if (this.radarRevealRing) this.radarRevealRing.destroy();
   }
 }

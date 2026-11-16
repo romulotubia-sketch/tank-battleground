@@ -65,23 +65,36 @@ function drawTankHull(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
   const cx = 40;
   const cy = 40;
 
-  // Drop shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.24)';
+  // Ground drop shadow scaled to chassis footprint
+  ctx.fillStyle = 'rgba(0,0,0,0.26)';
   ctx.beginPath();
-  ctx.roundRect(cx - 23, cy - 20, 50, 44, 8);
+  ctx.roundRect(
+    cx - (visual.silhouette === 'heavy' ? 25 : 23),
+    cy - (visual.silhouette === 'heavy' ? 22 : 19),
+    visual.silhouette === 'heavy' ? 54 : 50,
+    visual.silhouette === 'heavy' ? 48 : 42,
+    8
+  );
   ctx.fill();
 
-  const treadW = visual.silhouette === 'heavy' ? 54 : visual.silhouette === 'sleek' ? 46 : 50;
-  const treadH = visual.silhouette === 'heavy' ? 12 : 9;
-  const treadOffset = visual.silhouette === 'heavy' ? 17 : 15;
+  const treadW =
+    visual.silhouette === 'heavy'
+      ? 56
+      : visual.silhouette === 'sleek'
+      ? 46
+      : visual.silhouette === 'long_barrel'
+      ? 52
+      : 50;
+  const treadH = visual.silhouette === 'heavy' ? 12.5 : visual.silhouette === 'sleek' ? 8 : 9.5;
+  const treadOffset = visual.silhouette === 'heavy' ? 17.5 : visual.silhouette === 'sleek' ? 14 : 15;
 
-  // Left & Right treads
+  // Left & Right treads with detailed track links
   for (const side of [-1, 1]) {
     const ty = cy + side * treadOffset - treadH / 2;
-    drawInkRect(ctx, cx - treadW / 2, ty, treadW, treadH, visual.treadColor, 4, 2.5);
+    drawInkRect(ctx, cx - treadW / 2, ty, treadW, treadH, visual.treadColor, 3.5, 2.5);
     ctx.strokeStyle = '#4B5049';
     ctx.lineWidth = 1.5;
-    for (let tx = cx - treadW / 2 + 6; tx < cx + treadW / 2 - 4; tx += 7) {
+    for (let tx = cx - treadW / 2 + 5; tx < cx + treadW / 2 - 4; tx += 6.5) {
       ctx.beginPath();
       ctx.moveTo(tx, ty + 1.5);
       ctx.lineTo(tx, ty + treadH - 1.5);
@@ -89,13 +102,14 @@ function drawTankHull(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
     }
   }
 
-  // Main Hull shape based on silhouette
+  // Distinct chassis silhouettes
   if (visual.silhouette === 'angular') {
+    // Phantom: faceted stealth arrowhead hull
     ctx.beginPath();
-    ctx.moveTo(cx + 25, cy);
+    ctx.moveTo(cx + 26, cy);
     ctx.lineTo(cx + 12, cy - 17);
     ctx.lineTo(cx - 22, cy - 15);
-    ctx.lineTo(cx - 18, cy);
+    ctx.lineTo(cx - 17, cy);
     ctx.lineTo(cx - 22, cy + 15);
     ctx.lineTo(cx + 12, cy + 17);
     ctx.closePath();
@@ -104,26 +118,94 @@ function drawTankHull(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
     ctx.lineWidth = 3;
     ctx.strokeStyle = INK;
     ctx.stroke();
+
+    // Inner stealth armor facet & seam lines
+    ctx.beginPath();
+    ctx.moveTo(cx + 18, cy);
+    ctx.lineTo(cx + 7, cy - 11);
+    ctx.lineTo(cx - 15, cy - 9);
+    ctx.lineTo(cx - 12, cy);
+    ctx.lineTo(cx - 15, cy + 9);
+    ctx.lineTo(cx + 7, cy + 11);
+    ctx.closePath();
+    ctx.fillStyle = visual.hullSecondary;
+    ctx.fill();
+    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = INK;
+    ctx.stroke();
+
+    // Rear recessed stealth vents
+    drawInkRect(ctx, cx - 17, cy - 7, 5, 4, '#1B1822', 1, 1.2);
+    drawInkRect(ctx, cx - 17, cy + 3, 5, 4, '#1B1822', 1, 1.2);
+  } else if (visual.silhouette === 'sleek') {
+    // Scout: tapered lightweight wedge nose
+    ctx.beginPath();
+    ctx.moveTo(cx + 23, cy - 8);
+    ctx.lineTo(cx + 23, cy + 8);
+    ctx.lineTo(cx + 6, cy + 12);
+    ctx.lineTo(cx - 22, cy + 12);
+    ctx.lineTo(cx - 22, cy - 12);
+    ctx.lineTo(cx + 6, cy - 12);
+    ctx.closePath();
+    ctx.fillStyle = visual.hullPrimary;
+    ctx.fill();
+    ctx.lineWidth = 2.8;
+    ctx.strokeStyle = INK;
+    ctx.stroke();
+
+    drawInkRect(ctx, cx - 17, cy - 8, 28, 16, visual.hullSecondary, 4, 1.8);
+    // Twin rear turbine exhaust ports
+    drawInkRect(ctx, cx - 22, cy - 7, 4, 5, '#2A2520', 1, 1.4);
+    drawInkRect(ctx, cx - 22, cy + 2, 4, 5, '#2A2520', 1, 1.4);
+  } else if (visual.silhouette === 'heavy') {
+    // Fortress: wide composite armor + side reactive armor skirts
+    drawInkRect(ctx, cx - 25, cy - 17, 50, 34, visual.hullPrimary, 6, 3);
+    drawInkRect(ctx, cx - 19, cy - 12, 34, 24, visual.hullSecondary, 4, 2);
+    // Side reactive armor blocks
+    for (const side of [-1, 1]) {
+      for (const ox of [-14, -2, 10]) {
+        drawInkRect(ctx, cx + ox, cy + side * 14 - 2.5, 9, 5, visual.hullSecondary, 1.5, 1.6);
+      }
+    }
+    // Dual shield capacitor nodes
+    drawInkRect(ctx, cx - 23, cy - 9, 5, 6, visual.accentColor, 1.5, 1.4);
+    drawInkRect(ctx, cx - 23, cy + 3, 5, 6, visual.accentColor, 1.5, 1.4);
+  } else if (visual.silhouette === 'long_barrel') {
+    // Artillery: broad stabilized hull + rear recoil spades
+    drawInkRect(ctx, cx - 25, cy - 13, 6, 6, '#3B342C', 1.5, 1.8);
+    drawInkRect(ctx, cx - 25, cy + 7, 6, 6, '#3B342C', 1.5, 1.8);
+    drawInkRect(ctx, cx - 23, cy - 15, 46, 30, visual.hullPrimary, 6, 3);
+    drawInkRect(ctx, cx - 17, cy - 10, 31, 20, visual.hullSecondary, 3, 2);
+    // Rear shell rack detail
+    for (const ry of [-6, 0, 6]) {
+      drawInkRect(ctx, cx - 20, cy + ry - 2, 6, 4, visual.accentColor, 1, 1.2);
+    }
+  } else if (visual.silhouette === 'coil') {
+    // Tesla: insulated chassis with glowing flank capacitor cells
+    drawInkRect(ctx, cx - 23, cy - 14.5, 46, 29, visual.hullPrimary, 7, 3);
+    drawInkRect(ctx, cx - 17, cy - 9.5, 31, 19, visual.hullSecondary, 4, 2);
+    for (const side of [-1, 1]) {
+      drawInkRect(ctx, cx - 12, cy + side * 12.5 - 3, 22, 6, visual.accentColor, 2, 1.6);
+    }
   } else {
-    const hw = visual.silhouette === 'heavy' ? 48 : visual.silhouette === 'sleek' ? 44 : 46;
-    const hh = visual.silhouette === 'heavy' ? 32 : visual.silhouette === 'sleek' ? 24 : 28;
-    drawInkRect(ctx, cx - hw / 2, cy - hh / 2, hw, hh, visual.hullPrimary, 7, 3);
-    drawInkRect(
-      ctx,
-      cx - hw / 2 + 6,
-      cy - hh / 2 + 5,
-      hw - 16,
-      hh - 10,
-      visual.hullSecondary,
-      4,
-      2
-    );
+    // Assault: balanced frontline armor + rear engine grille
+    drawInkRect(ctx, cx - 23, cy - 14.5, 46, 29, visual.hullPrimary, 7, 3);
+    drawInkRect(ctx, cx - 16, cy - 9.5, 30, 19, visual.hullSecondary, 4, 2);
+    // Engine deck louvers
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.6;
+    for (const lx of [-13, -9, -5]) {
+      ctx.beginPath();
+      ctx.moveTo(cx + lx, cy - 6);
+      ctx.lineTo(cx + lx, cy + 6);
+      ctx.stroke();
+    }
   }
 
-  // Front visor / accent stripe
+  // Front glacis visor / accent stripe
   ctx.fillStyle = visual.accentColor;
   ctx.beginPath();
-  ctx.roundRect(cx + 11, cy - 8, 6, 16, 2);
+  ctx.roundRect(cx + 12, cy - 7, 5.5, 14, 2);
   ctx.fill();
   ctx.lineWidth = 1.8;
   ctx.strokeStyle = INK;
@@ -137,34 +219,58 @@ function drawTankTurret(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
 
   // Barrel(s)
   if (visual.silhouette === 'heavy') {
-    drawInkRect(ctx, cx + 6, cy - 6, 30, 12, visual.hullSecondary, 3, 2.5);
-    drawInkRect(ctx, cx + 31, cy - 7, 7, 14, visual.accentColor, 2, 2);
+    // Fortress heavy cannon + twin recoil collar
+    drawInkRect(ctx, cx + 6, cy - 7.5, 12, 15, visual.hullPrimary, 3, 2.2);
+    drawInkRect(ctx, cx + 10, cy - 5.5, 27, 11, visual.hullSecondary, 2.5, 2.5);
+    drawInkRect(ctx, cx + 32, cy - 7, 7.5, 14, visual.accentColor, 2, 2);
   } else if (visual.silhouette === 'long_barrel') {
-    drawInkRect(ctx, cx + 8, cy - 4, 44, 8, visual.hullSecondary, 2, 2.5);
-    drawInkRect(ctx, cx + 46, cy - 5.5, 8, 11, visual.accentColor, 2, 2);
+    // Artillery extra-long rifled siege barrel + slotted muzzle brake
+    drawInkRect(ctx, cx + 7, cy - 6.5, 14, 13, visual.hullPrimary, 3, 2.2);
+    drawInkRect(ctx, cx + 12, cy - 4, 41, 8, visual.hullSecondary, 2, 2.5);
+    drawInkRect(ctx, cx + 48, cy - 6, 8, 12, visual.accentColor, 2, 2);
   } else if (visual.silhouette === 'coil') {
-    drawInkRect(ctx, cx + 8, cy - 5, 28, 10, visual.hullSecondary, 3, 2.5);
-    // Tesla coils
-    for (const ox of [18, 25, 32]) {
+    drawInkRect(ctx, cx + 8, cy - 5, 29, 10, visual.hullSecondary, 3, 2.5);
+    // Emitter prongs at muzzle
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 4.5;
+    ctx.beginPath();
+    ctx.moveTo(cx + 33, cy - 4);
+    ctx.lineTo(cx + 43, cy - 8.5);
+    ctx.moveTo(cx + 33, cy + 4);
+    ctx.lineTo(cx + 43, cy + 8.5);
+    ctx.stroke();
+    ctx.strokeStyle = visual.accentColor;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(cx + 33, cy - 4);
+    ctx.lineTo(cx + 43, cy - 8.5);
+    ctx.moveTo(cx + 33, cy + 4);
+    ctx.lineTo(cx + 43, cy + 8.5);
+    ctx.stroke();
+    // Tesla induction coils along barrel
+    for (const ox of [15, 22, 29]) {
       ctx.beginPath();
-      ctx.moveTo(cx + ox, cy - 7);
-      ctx.lineTo(cx + ox, cy + 7);
-      ctx.lineWidth = 3;
+      ctx.moveTo(cx + ox, cy - 8);
+      ctx.lineTo(cx + ox, cy + 8);
+      ctx.lineWidth = 3.2;
       ctx.strokeStyle = visual.accentColor;
       ctx.stroke();
     }
   } else if (visual.silhouette === 'sleek') {
     drawInkRect(ctx, cx + 6, cy - 3.5, 29, 7, visual.hullSecondary, 2, 2.5);
+    drawInkRect(ctx, cx + 31, cy - 4.5, 5, 9, visual.accentColor, 1.5, 1.8);
   } else if (visual.silhouette === 'angular') {
     drawInkRect(ctx, cx + 6, cy - 3.5, 32, 7, visual.hullSecondary, 2, 2.5);
+    drawInkRect(ctx, cx + 33, cy - 4.5, 6, 9, visual.accentColor, 2, 2);
   } else {
-    // Balanced assault cannon
+    // Assault balanced cannon + coaxial barrel stub
+    drawInkRect(ctx, cx + 10, cy + 4, 15, 3.5, '#2A2F26', 1, 1.4);
     drawInkRect(ctx, cx + 6, cy - 4.5, 33, 9, visual.hullSecondary, 3, 2.5);
     drawInkRect(ctx, cx + 34, cy - 5.5, 6, 11, visual.accentColor, 2, 2);
   }
 
   // Turret dome
-  const radius = visual.silhouette === 'heavy' ? 16 : visual.silhouette === 'sleek' ? 12 : 14;
+  const radius = visual.silhouette === 'heavy' ? 16.5 : visual.silhouette === 'sleek' ? 12 : 14;
   ctx.beginPath();
   if (visual.silhouette === 'angular') {
     ctx.moveTo(cx + 15, cy);
@@ -172,6 +278,17 @@ function drawTankTurret(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
     ctx.lineTo(cx - 14, cy - 9);
     ctx.lineTo(cx - 14, cy + 9);
     ctx.lineTo(cx + 2, cy + 13);
+    ctx.closePath();
+  } else if (visual.silhouette === 'heavy') {
+    // Chamfered octagon fortress turret
+    ctx.moveTo(cx + 16, cy - 8);
+    ctx.lineTo(cx + 16, cy + 8);
+    ctx.lineTo(cx + 6, cy + 16);
+    ctx.lineTo(cx - 11, cy + 15);
+    ctx.lineTo(cx - 16, cy + 8);
+    ctx.lineTo(cx - 16, cy - 8);
+    ctx.lineTo(cx - 11, cy - 15);
+    ctx.lineTo(cx + 6, cy - 16);
     ctx.closePath();
   } else {
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -182,10 +299,23 @@ function drawTankTurret(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
   ctx.strokeStyle = INK;
   ctx.stroke();
 
-  // Hatch detail
+  // Rear radio antenna for Scout
+  if (visual.silhouette === 'sleek') {
+    ctx.strokeStyle = visual.accentColor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 8, cy - 6);
+    ctx.lineTo(cx - 18, cy - 12);
+    ctx.stroke();
+  }
+
+  // Hatch / coil cap detail
   ctx.beginPath();
   ctx.arc(cx - 3, cy - 2, 5, 0, Math.PI * 2);
-  ctx.fillStyle = visual.hullSecondary;
+  ctx.fillStyle =
+    visual.silhouette === 'coil' || visual.silhouette === 'angular'
+      ? visual.accentColor
+      : visual.hullSecondary;
   ctx.fill();
   ctx.lineWidth = 2;
   ctx.strokeStyle = INK;
@@ -347,58 +477,113 @@ export function ensureProceduralTextures(scene: Phaser.Scene): void {
     ctx.fill();
   });
 
-  // 3. Projectiles
-  makeCanvasTexture(scene, 'proj_standard', 24, 16, (ctx) => {
+  // 3. Projectiles with clear directional silhouette
+  makeCanvasTexture(scene, 'proj_standard', 26, 16, (ctx) => {
+    // Hot tracer tail
+    ctx.fillStyle = 'rgba(254, 240, 138, 0.5)';
     ctx.beginPath();
-    ctx.ellipse(12, 8, 9, 5, 0, 0, Math.PI * 2);
-    ctx.fillStyle = '#FCD34D';
+    ctx.ellipse(7, 8, 5, 2.8, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = INK;
-    ctx.stroke();
-  });
 
-  makeCanvasTexture(scene, 'proj_heavy', 28, 20, (ctx) => {
     ctx.beginPath();
-    ctx.ellipse(14, 10, 11, 7, 0, 0, Math.PI * 2);
-    ctx.fillStyle = '#EF4444';
-    ctx.fill();
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = INK;
-    ctx.stroke();
-  });
-
-  makeCanvasTexture(scene, 'proj_pierce', 30, 16, (ctx) => {
-    ctx.beginPath();
-    ctx.moveTo(27, 8);
-    ctx.lineTo(6, 2);
-    ctx.lineTo(10, 8);
-    ctx.lineTo(6, 14);
+    ctx.moveTo(23, 8);
+    ctx.lineTo(12, 3);
+    ctx.lineTo(5, 4);
+    ctx.lineTo(5, 12);
+    ctx.lineTo(12, 13);
     ctx.closePath();
-    ctx.fillStyle = '#C084FC';
+    ctx.fillStyle = '#FCD34D';
     ctx.fill();
     ctx.lineWidth = 2.2;
     ctx.strokeStyle = INK;
     ctx.stroke();
   });
 
-  makeCanvasTexture(scene, 'proj_electric', 24, 18, (ctx) => {
+  makeCanvasTexture(scene, 'proj_heavy', 30, 20, (ctx) => {
+    ctx.fillStyle = 'rgba(251, 146, 60, 0.45)';
     ctx.beginPath();
-    ctx.arc(12, 9, 7, 0, Math.PI * 2);
-    ctx.fillStyle = '#22D3EE';
+    ctx.ellipse(8, 10, 6, 4.5, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.lineWidth = 2.5;
+
+    ctx.beginPath();
+    ctx.moveTo(27, 10);
+    ctx.lineTo(15, 3);
+    ctx.lineTo(5, 5);
+    ctx.lineTo(5, 15);
+    ctx.lineTo(15, 17);
+    ctx.closePath();
+    ctx.fillStyle = '#EF4444';
+    ctx.fill();
+    ctx.lineWidth = 2.4;
     ctx.strokeStyle = INK;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(16, 10, 4.5, 2.5, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#FDE047';
+    ctx.fill();
+  });
+
+  makeCanvasTexture(scene, 'proj_pierce', 32, 18, (ctx) => {
+    ctx.beginPath();
+    ctx.moveTo(29, 9);
+    ctx.lineTo(6, 2);
+    ctx.lineTo(11, 9);
+    ctx.lineTo(6, 16);
+    ctx.closePath();
+    ctx.fillStyle = '#C084FC';
+    ctx.fill();
+    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = INK;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(24, 9);
+    ctx.lineTo(12, 9);
+    ctx.strokeStyle = '#F3E8FF';
+    ctx.lineWidth = 2;
     ctx.stroke();
   });
 
-  makeCanvasTexture(scene, 'proj_artillery', 32, 20, (ctx) => {
+  makeCanvasTexture(scene, 'proj_electric', 30, 22, (ctx) => {
+    // Outer electric aura
     ctx.beginPath();
-    ctx.moveTo(29, 10);
-    ctx.lineTo(14, 3);
+    ctx.ellipse(15, 11, 11, 8, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(34, 211, 238, 0.35)';
+    ctx.fill();
+
+    // Electric plasma orb
+    ctx.beginPath();
+    ctx.ellipse(15, 11, 8.5, 5.5, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#22D3EE';
+    ctx.fill();
+    ctx.lineWidth = 2.4;
+    ctx.strokeStyle = INK;
+    ctx.stroke();
+
+    // Bright arc core
+    ctx.beginPath();
+    ctx.ellipse(16, 11, 4.2, 2.5, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#ECFEFF';
+    ctx.fill();
+
+    // Trailing arc crackle
+    ctx.strokeStyle = '#A5F3FC';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(3, 8);
+    ctx.lineTo(7, 11);
+    ctx.lineTo(4, 14);
+    ctx.stroke();
+  });
+
+  makeCanvasTexture(scene, 'proj_artillery', 34, 22, (ctx) => {
+    ctx.beginPath();
+    ctx.moveTo(31, 11);
+    ctx.lineTo(16, 3);
     ctx.lineTo(4, 5);
-    ctx.lineTo(4, 15);
-    ctx.lineTo(14, 17);
+    ctx.lineTo(4, 17);
+    ctx.lineTo(16, 19);
     ctx.closePath();
     ctx.fillStyle = '#EF4444';
     ctx.fill();
@@ -406,47 +591,106 @@ export function ensureProceduralTextures(scene: Phaser.Scene): void {
     ctx.strokeStyle = INK;
     ctx.stroke();
     ctx.beginPath();
-    ctx.ellipse(18, 10, 5, 3, 0, 0, Math.PI * 2);
+    ctx.ellipse(19, 11, 5.5, 3, 0, 0, Math.PI * 2);
     ctx.fillStyle = '#FCD34D';
     ctx.fill();
   });
 
   // 4. Proximity Mine
-  makeCanvasTexture(scene, 'entity_mine', 34, 34, (ctx) => {
+  makeCanvasTexture(scene, 'entity_mine', 38, 38, (ctx) => {
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 8; i++) {
+      const a = (Math.PI * 2 * i) / 8;
+      ctx.beginPath();
+      ctx.moveTo(19 + Math.cos(a) * 11, 19 + Math.sin(a) * 11);
+      ctx.lineTo(19 + Math.cos(a) * 16.5, 19 + Math.sin(a) * 16.5);
+      ctx.stroke();
+    }
     ctx.beginPath();
-    ctx.arc(17, 17, 13, 0, Math.PI * 2);
-    ctx.fillStyle = '#3B3F3A';
+    ctx.arc(19, 19, 12.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#333834';
     ctx.fill();
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = INK;
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(17, 17, 5, 0, Math.PI * 2);
+    ctx.arc(19, 19, 6.5, 0, Math.PI * 2);
     ctx.fillStyle = '#F97316';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(19, 19, 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#FEF08A';
     ctx.fill();
   });
 
-  // 5. Powerup icons
+  // 5. Powerup icons with distinct emblems + short labels
   for (const id of POWERUP_IDS) {
     const def = POWERUP_DEFINITIONS[id];
-    makeCanvasTexture(scene, `pwr_${id}`, 44, 44, (ctx) => {
-      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    makeCanvasTexture(scene, `pwr_${id}`, 48, 48, (ctx) => {
+      ctx.fillStyle = 'rgba(0,0,0,0.26)';
       ctx.beginPath();
-      ctx.roundRect(5, 7, 36, 36, 10);
+      ctx.roundRect(5, 7, 38, 38, 10);
       ctx.fill();
 
-      drawInkRect(ctx, 4, 4, 36, 36, def.color, 9, 2.8);
-      drawInkRect(ctx, 8, 8, 28, 28, def.accent, 6, 1.5);
+      drawInkRect(ctx, 4, 4, 38, 38, def.color, 9, 2.8);
+      drawInkRect(ctx, 8, 8, 30, 30, def.accent, 6, 1.5);
+
+      ctx.save();
+      ctx.strokeStyle = def.color;
+      ctx.fillStyle = def.color;
+      ctx.globalAlpha = 0.28;
+      ctx.lineWidth = 2.5;
+      if (id === 'repair_kit') {
+        ctx.fillRect(20, 12, 6, 22);
+        ctx.fillRect(12, 20, 22, 6);
+      } else if (id === 'shield') {
+        ctx.beginPath();
+        ctx.moveTo(23, 12);
+        ctx.lineTo(32, 16);
+        ctx.lineTo(30, 26);
+        ctx.lineTo(23, 33);
+        ctx.lineTo(16, 26);
+        ctx.lineTo(14, 16);
+        ctx.closePath();
+        ctx.stroke();
+      } else if (id === 'radar') {
+        ctx.beginPath();
+        ctx.arc(23, 23, 10, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(23, 23, 5, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (id === 'multi_shot') {
+        ctx.beginPath();
+        ctx.moveTo(23, 28);
+        ctx.lineTo(13, 14);
+        ctx.moveTo(23, 28);
+        ctx.lineTo(23, 12);
+        ctx.moveTo(23, 28);
+        ctx.lineTo(33, 14);
+        ctx.stroke();
+      } else if (id === 'piercing_shell') {
+        ctx.beginPath();
+        ctx.moveTo(14, 30);
+        ctx.lineTo(32, 15);
+        ctx.stroke();
+      } else if (id === 'mine_kit') {
+        ctx.beginPath();
+        ctx.arc(23, 23, 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
 
       ctx.fillStyle = INK;
-      ctx.font = 'bold 11px "Barlow Condensed", sans-serif';
+      ctx.font = 'bold 12px "Barlow Condensed", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(def.shortLabel, 22, 23);
+      ctx.fillText(def.shortLabel, 23, 24);
     });
   }
 
-  // 6. Soft smoke/spark circle particle
+  // 6. Pooled VFX textures (puff, tread mark, blast scorch)
   makeCanvasTexture(scene, 'fx_puff', 32, 32, (ctx) => {
     ctx.beginPath();
     ctx.arc(16, 16, 12, 0, Math.PI * 2);
@@ -455,5 +699,22 @@ export function ensureProceduralTextures(scene: Phaser.Scene): void {
     ctx.lineWidth = 2;
     ctx.strokeStyle = INK;
     ctx.stroke();
+  });
+
+  makeCanvasTexture(scene, 'fx_tread', 16, 36, (ctx) => {
+    ctx.fillStyle = 'rgba(26, 24, 20, 0.34)';
+    ctx.fillRect(2, 2, 12, 7);
+    ctx.fillRect(2, 27, 12, 7);
+  });
+
+  makeCanvasTexture(scene, 'fx_scorch', 64, 64, (ctx) => {
+    const grad = ctx.createRadialGradient(32, 32, 4, 32, 32, 30);
+    grad.addColorStop(0, 'rgba(22, 20, 18, 0.65)');
+    grad.addColorStop(0.6, 'rgba(28, 25, 22, 0.32)');
+    grad.addColorStop(1, 'rgba(28, 25, 22, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(32, 32, 30, 0, Math.PI * 2);
+    ctx.fill();
   });
 }

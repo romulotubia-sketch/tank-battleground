@@ -1,11 +1,15 @@
 export type ScreenId =
   | 'MAIN_MENU'
-  | 'TANK_SELECT'
+  | 'GARAGE'
   | 'TANK_COLLECTION'
+  | 'ARENA_SELECT'
+  | 'MISSIONS'
   | 'SETTINGS'
   | 'HOW_TO_PLAY'
   | 'IN_GAME'
   | 'RESULTS';
+
+export type GraphicsQuality = 'low' | 'medium' | 'high';
 
 export type TankId =
   | 'assault'
@@ -59,6 +63,7 @@ export interface TankAbilitySpec {
   description: string;
   cooldownSec: number;
   durationSec: number;
+  fireRateMultiplier?: number;
   shieldAmount?: number;
   speedBoostMultiplier?: number;
   barrageShellCount?: number;
@@ -67,6 +72,11 @@ export interface TankAbilitySpec {
   barrageAoERadius?: number;
   barrageShellDamage?: number;
   barrageScatterRadius?: number;
+  empRadius?: number;
+  empSlowStrength?: number;
+  empSlowDurationSec?: number;
+  empDamage?: number;
+  phaseDamageMultiplier?: number;
 }
 
 export interface TankPassiveSpec {
@@ -77,6 +87,9 @@ export interface TankPassiveSpec {
   maxHpMultiplier?: number;
   moveSpeedMultiplier?: number;
   projectileRangeMultiplier?: number;
+  slowStrength?: number;
+  slowDurationSec?: number;
+  detectionMultiplier?: number;
 }
 
 export interface TankDefinition {
@@ -113,6 +126,8 @@ export interface TankDefinition {
   visual: TankVisualConfig;
 }
 
+export type DuplicatePickupPolicy = 'refresh' | 'stack_capped' | 'instant';
+
 export interface PowerupDefinition {
   id: PowerupId;
   name: string;
@@ -121,6 +136,20 @@ export interface PowerupDefinition {
   durationSec: number; // 0 for instant
   color: string;
   accent: string;
+  duplicatePolicy: DuplicatePickupPolicy;
+  healMissingRatio?: number;
+  healMinAmount?: number;
+  fireRateMultiplier?: number;
+  damageMultiplier?: number;
+  speedBonusMultiplier?: number;
+  shieldAmount?: number;
+  multiShotCount?: number;
+  multiShotSpreadRad?: number;
+  pierceCount?: number;
+  radarRadius?: number;
+  cooldownRecoveryMultiplier?: number;
+  minesGranted?: number;
+  maxMineCharges?: number;
 }
 
 export interface ObstaclePlacement {
@@ -141,12 +170,15 @@ export interface ArenaDefinition {
   id: ArenaId;
   name: string;
   subtitle: string;
+  identity: string;
   description: string;
+  features: string[];
   width: number;
   height: number;
   groundColor: string;
   groundGridColor: string;
   borderColor: string;
+  themeAccent: string;
   spawns: SpawnPoint[];
   obstacles: ObstaclePlacement[];
 }
@@ -180,8 +212,18 @@ export interface HUDStateSnapshot {
   abilityActiveSec: number;
   abilityName: string;
   activeBuffs: ActiveBuffSnapshot[];
+  mineCharges: number;
+  maxMineCharges: number;
+  activeMineCount: number;
   isConcealed: boolean;
+  isPhased: boolean;
+  isSlowed: boolean;
+  slowRemainingSec: number;
   radarActive: boolean;
+  radarRemainingSec: number;
+  radarDetectedCount: number;
+  recentPickupName: string | null;
+  recentPickupColor: string | null;
   isPaused: boolean;
   isPreparing: boolean;
   prepLabel: string | null;
@@ -205,14 +247,24 @@ export interface MatchResult {
 export interface GameSettings {
   soundEnabled: boolean;
   soundVolume: number; // 0..1
+  musicEnabled: boolean;
+  musicVolume: number; // 0..1
+  graphicsQuality: GraphicsQuality;
+  screenShakeEnabled: boolean;
+  vibrationEnabled: boolean;
+  controlSensitivity: number; // 0.6..1.5
   showTouchControls: 'auto' | 'always';
   autoFireOnAim: boolean;
-  lowDetailMode: boolean;
+  lowDetailMode: boolean; // derived mirror of graphicsQuality === 'low' for compatibility
   matchDurationSec: number;
   landscapePromptEnabled: boolean;
 }
 
 export interface PlayerProgression {
+  playerName: string;
+  level: number;
+  xp: number;
+  xpToNext: number;
   unlockedTanks: TankId[];
   selectedTank: TankId;
   selectedArena: ArenaId;

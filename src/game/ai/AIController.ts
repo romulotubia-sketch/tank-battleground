@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { MINE_SYSTEM_CONFIG } from '../../data/powerups';
 import { ObstacleEntity } from '../entities/ObstacleEntity';
 import { TankEntity } from '../entities/TankEntity';
 import { ActiveWorldPowerup } from '../powerups/PowerupManager';
@@ -10,6 +11,7 @@ export interface AIDecision {
   aimAngle: number;
   shouldFire: boolean;
   shouldUseAbility: boolean;
+  shouldDeployMine: boolean;
   abilityTargetX?: number;
   abilityTargetY?: number;
 }
@@ -37,6 +39,8 @@ export class AIController {
   private aimJitter = 0;
   private currentTargetId: string | null = null;
   private postShotCooldown = 0;
+  private detourTimer = 0;
+  private detourAngle = 0;
 
   update(
     dt: number,
@@ -50,12 +54,14 @@ export class AIController {
   ): AIDecision {
     if (!self.alive) {
       this.currentTargetId = null;
+      this.detourTimer = 0;
       return {
         moveX: 0,
         moveY: 0,
         aimAngle: self.turretAngle,
         shouldFire: false,
         shouldUseAbility: false,
+        shouldDeployMine: false,
       };
     }
 
@@ -64,6 +70,9 @@ export class AIController {
     }
     if (this.postShotCooldown > 0) {
       this.postShotCooldown = Math.max(0, this.postShotCooldown - dt);
+    }
+    if (this.detourTimer > 0) {
+      this.detourTimer = Math.max(0, this.detourTimer - dt);
     }
 
     this.decisionTimer -= dt;
@@ -75,6 +84,7 @@ export class AIController {
         aimAngle: this.cachedAimAngle,
         shouldFire: false,
         shouldUseAbility: false,
+        shouldDeployMine: false,
       };
     }
 
@@ -82,12 +92,25 @@ export class AIController {
     this.decisionTimer = stepDt + Math.random() * 0.05;
     this.aimJitter = (Math.random() - 0.5) * 0.34;
 
-    // Stuck detection (Scout/mobile AI pivots faster so it avoids sitting idle against obstacles)
-    const stuckThreshold = self.definition.id === 'scout' || self.personality === 'mobile' ? 0.36 : 0.55;
-    if (Math.hypot(self.x - this.lastX, self.y - this.lastY) < 6) {
+    // Stuck detection: trigger a committed clear-probe detour instead of pushing into walls/water
+    const stuckThreshold =
+      self.definition.id === 'scout' || self.definition.id === 'phantom' || self.personality === 'mobile'
+        ? 0.34
+        : 0.48;
+    const attemptingMove = Math.hypot(this.cachedMoveX, this.cachedMoveY) > 0.25;
+    if (attemptingMove && Math.hypot(self.x - this.lastX, self.y - this.lastY) < 7) {
       this.stuckTimer += stepDt;
-      if (this.stuckTimer > stuckThreshold) {
-        this.wanderAngle += Math.PI * 0.72 * this.strafeSign;
+      if (this.stuckTimer >= stuckThreshold) {
+        const baseAng = Math.atan2(this.cachedMoveY, this.cachedMoveX);
+        this.detourAngle = this.pickClearDetourAngle(
+          self,
+          baseAng,
+          obstacles,
+          arenaWidth,
+          arenaHeight
+        );
+        this.wanderAngle = this.detourAngle;
+        this.detourTimer = 0.82;
         this.strafeSign *= -1;
         this.stuckTimer = 0;
       }
@@ -98,22 +121,34 @@ export class AIController {
     this.lastY = self.y;
 
     // 1. Evaluate visible targets using fair detection range & anti-dogpile distribution
-    const baseDetectRange = self.hasBuff('radar')
-      ? 860
+    const selfRadarRadius = self.effectsManager.getRadarRadius();
+    const selfHasRadar = selfRadarRadius > 0;
+    const baseDetectRange = selfHasRadar
+      ? Math.max(860, selfRadarRadius)
       : self.definition.id === 'artillery'
       ? Math.max(620, self.getEffectiveProjectileRange() * 0.96)
       : 620;
     let bestTarget: TankEntity | null = null;
+    let bestHasLos = false;
+    let bestTargetDist = Infinity;
     let bestScore = -Infinity;
 
     for (const other of allTanks) {
       if (!other.alive || other.id === self.id) continue;
       const dist = Math.hypot(other.x - self.x, other.y - self.y);
 
-      // Respect Phantom passive & bush concealment unless Radar is active
-      let effectiveRange = baseDetectRange * other.definition.stats.detectionMultiplier;
-      if (other.concealed && !self.hasBuff('radar')) effectiveRange *= 0.42;
-      if (other.phaseCloaked && !self.hasBuff('radar')) effectiveRange *= 0.48;
+      // Respect Phantom Ghost Protocol passive & bush concealment unless Radar covers this range or target opened fire
+      let effectiveRange = baseDetectRange * other.getEffectiveDetectionMultiplier();
+      if (other.recentAttackTimer > 0) {
+        effectiveRange = Math.max(effectiveRange, baseDetectRange * 0.92);
+      }
+      const radarCoversOther = selfHasRadar && dist <= selfRadarRadius;
+      if (radarCoversOther) {
+        effectiveRange = Math.max(effectiveRange, selfRadarRadius);
+      } else {
+        if (other.concealed) effectiveRange *= 0.42;
+        if (other.phaseCloaked) effectiveRange *= 0.55;
+      }
 
       if (dist > effectiveRange) continue;
 
@@ -148,21 +183,39 @@ export class AIController {
       if (score > bestScore) {
         bestScore = score;
         bestTarget = other;
+        bestHasLos = hasLos;
+        bestTargetDist = dist;
       }
     }
     this.currentTargetId = bestTarget ? bestTarget.id : null;
 
-    // 2. Check nearby powerups
+    // 2. Utility-based powerup evaluation (ignores useless pickups & won't abandon close duels recklessly)
     let targetPowerup: ActiveWorldPowerup | null = null;
-    let nearestPwrDist = self.personality === 'opportunistic' ? 420 : 270;
-    if (self.hp < self.maxHp * 0.55) nearestPwrDist += 140;
+    let bestPwrDist = Infinity;
+    let bestPwrUtility = 0;
+    const maxSearchRadius =
+      (self.personality === 'opportunistic' ? 460 : 340) +
+      (self.hp < self.maxHp * 0.5 ? 140 : 0);
+
     for (const pwr of powerups) {
       const d = Math.hypot(pwr.x - self.x, pwr.y - self.y);
-      if (d < nearestPwrDist) {
-        nearestPwrDist = d;
+      if (d > maxSearchRadius) continue;
+
+      const utility = this.evaluatePowerupUtility(self, pwr, d, obstacles);
+      if (utility > bestPwrUtility) {
+        bestPwrUtility = utility;
         targetPowerup = pwr;
+        bestPwrDist = d;
       }
     }
+
+    const inCloseLosDuel = Boolean(bestTarget && bestHasLos && bestTargetDist < 290);
+    const shouldSeekPowerup =
+      Boolean(targetPowerup) &&
+      (!inCloseLosDuel ||
+        bestPwrDist < 145 ||
+        (self.hp < self.maxHp * 0.42 &&
+          (targetPowerup?.id === 'repair_kit' || targetPowerup?.id === 'shield')));
 
     // 3. Movement steering vector
     let steerX = 0;
@@ -178,7 +231,11 @@ export class AIController {
       steerY += (perpY / plen) * 1.4 * this.strafeSign;
     }
 
-    if (targetPowerup && (!bestTarget || self.hp < self.maxHp * 0.65 || nearestPwrDist < 190)) {
+    if (this.detourTimer > 0) {
+      // Follow committed clear detour route around blocking wall or water basin
+      steerX += Math.cos(this.detourAngle) * 1.65;
+      steerY += Math.sin(this.detourAngle) * 1.65;
+    } else if (targetPowerup && shouldSeekPowerup) {
       const ang = Math.atan2(targetPowerup.y - self.y, targetPowerup.x - self.x);
       steerX += Math.cos(ang);
       steerY += Math.sin(ang);
@@ -188,6 +245,10 @@ export class AIController {
       const desiredRange =
         self.definition.id === 'artillery'
           ? 455
+          : self.definition.id === 'tesla'
+          ? 275
+          : self.definition.id === 'phantom'
+          ? 285
           : self.personality === 'aggressive'
           ? 180
           : self.personality === 'defensive'
@@ -196,8 +257,38 @@ export class AIController {
           ? 250
           : 265;
 
-      const hpLow = self.hp < self.maxHp * (self.definition.id === 'scout' ? 0.42 : 0.35);
-      if (hpLow && self.personality !== 'aggressive') {
+      // Check if surrounded by multiple close opponents (Tesla & Phantom repositioning)
+      let nearbyCount = 0;
+      let crowdCenterX = 0;
+      let crowdCenterY = 0;
+      if (self.definition.id === 'tesla' || self.definition.id === 'phantom') {
+        for (const other of allTanks) {
+          if (!other.alive || other.id === self.id) continue;
+          if (Math.hypot(other.x - self.x, other.y - self.y) <= 275) {
+            nearbyCount += 1;
+            crowdCenterX += other.x;
+            crowdCenterY += other.y;
+          }
+        }
+      }
+
+      const hpLow = self.hp < self.maxHp * (self.definition.id === 'scout' || self.definition.id === 'phantom' ? 0.44 : 0.35);
+      if (self.definition.id === 'phantom' && self.phaseCloaked) {
+        // Actively use Phase Shift mobility to reposition away from danger
+        const awayAng =
+          nearbyCount > 0
+            ? Math.atan2(self.y - crowdCenterY / nearbyCount, self.x - crowdCenterX / nearbyCount)
+            : angToTarget + Math.PI;
+        steerX += Math.cos(awayAng) * 1.2;
+        steerY += Math.sin(awayAng) * 1.2;
+      } else if (nearbyCount >= 2) {
+        // Reposition away from surrounding opponents
+        const avgX = crowdCenterX / nearbyCount;
+        const avgY = crowdCenterY / nearbyCount;
+        const awayAng = Math.atan2(self.y - avgY, self.x - avgX);
+        steerX += Math.cos(awayAng) * 1.25;
+        steerY += Math.sin(awayAng) * 1.25;
+      } else if (hpLow && self.personality !== 'aggressive') {
         // Kite away
         steerX -= Math.cos(angToTarget);
         steerY -= Math.sin(angToTarget);
@@ -208,16 +299,20 @@ export class AIController {
         distToTarget <
         desiredRange - (self.definition.id === 'artillery' ? 95 : 55)
       ) {
-        steerX -= Math.cos(angToTarget) * (self.definition.id === 'artillery' ? 1.05 : 0.8);
-        steerY -= Math.sin(angToTarget) * (self.definition.id === 'artillery' ? 1.05 : 0.8);
+        steerX -= Math.cos(angToTarget) * (self.definition.id === 'artillery' ? 1.05 : 0.85);
+        steerY -= Math.sin(angToTarget) * (self.definition.id === 'artillery' ? 1.05 : 0.85);
       }
 
-      // Strafe perpendicular for mobile / tactical fighting
+      // Strafe perpendicular for mobile / tactical fighting (Phantom stays mobile)
       const strafeWeight =
         self.definition.id === 'scout' || self.personality === 'mobile'
           ? 1.25
+          : self.definition.id === 'phantom'
+          ? 1.15
           : self.definition.id === 'artillery'
           ? 0.82
+          : self.definition.id === 'tesla'
+          ? 0.85
           : 0.72;
       steerX += Math.cos(angToTarget + (Math.PI / 2) * this.strafeSign) * strafeWeight;
       steerY += Math.sin(angToTarget + (Math.PI / 2) * this.strafeSign) * strafeWeight;
@@ -239,23 +334,66 @@ export class AIController {
       steerY += Math.sin(this.wanderAngle);
     }
 
-    // Wall & obstacle repulsion feelers
-    const margin = 80;
-    if (self.x < margin) steerX += 1.6;
-    if (self.x > arenaWidth - margin) steerX -= 1.6;
-    if (self.y < margin) steerY += 1.6;
-    if (self.y > arenaHeight - margin) steerY -= 1.6;
+    // Arena border repulsion
+    const margin = 84;
+    if (self.x < margin) steerX += 1.75;
+    if (self.x > arenaWidth - margin) steerX -= 1.75;
+    if (self.y < margin) steerY += 1.75;
+    if (self.y > arenaHeight - margin) steerY -= 1.75;
 
+    // Closest-point AABB obstacle/water avoidance + tangent wall sliding + priming barrel evasion
+    const avoidMargin = self.radius + 36;
     for (const obs of obstacles) {
-      if (!obs.alive || !obs.blocksMovement) continue;
-      const dx = self.x - obs.x;
-      const dy = self.y - obs.y;
-      const avoidDist = Math.max(obs.width, obs.height) * 0.65 + 48;
+      if (!obs.alive) continue;
+
+      if (obs.isPriming) {
+        const bx = self.x - obs.x;
+        const by = self.y - obs.y;
+        const bd = Math.hypot(bx, by);
+        const dangerRange = 155;
+        if (bd < dangerRange && bd > 0.01) {
+          const flee = ((dangerRange - bd) / dangerRange) * 2.8;
+          steerX += (bx / bd) * flee;
+          steerY += (by / bd) * flee;
+        }
+        continue;
+      }
+
+      if (!obs.blocksMovement) continue;
+
+      const closestX = Phaser.Math.Clamp(self.x, obs.left, obs.right);
+      const closestY = Phaser.Math.Clamp(self.y, obs.top, obs.bottom);
+      const dx = self.x - closestX;
+      const dy = self.y - closestY;
       const d = Math.hypot(dx, dy);
-      if (d < avoidDist && d > 0.01) {
-        const push = ((avoidDist - d) / avoidDist) * 1.9;
-        steerX += (dx / d) * push;
-        steerY += (dy / d) * push;
+
+      if (d < avoidMargin) {
+        let nx: number;
+        let ny: number;
+        if (d > 0.01) {
+          nx = dx / d;
+          ny = dy / d;
+        } else {
+          const cdx = self.x - obs.x;
+          const cdy = self.y - obs.y;
+          const cd = Math.hypot(cdx, cdy) || 1;
+          nx = cdx / cd;
+          ny = cdy / cd;
+        }
+
+        const strength = (avoidMargin - d) / avoidMargin;
+        const pushWeight = obs.type === 'water' ? 2.35 : 2.05;
+        steerX += nx * strength * pushWeight;
+        steerY += ny * strength * pushWeight;
+
+        // If steering directly into the obstacle face, add consistent tangent slide to flank around it
+        const dotInto = steerX * nx + steerY * ny;
+        if (dotInto < 0) {
+          const tx = -ny * this.strafeSign;
+          const ty = nx * this.strafeSign;
+          steerX += tx * strength * 1.45;
+          steerY += ty * strength * 1.45;
+        }
       }
     }
 
@@ -282,10 +420,13 @@ export class AIController {
       const leadY = bestTarget.y + bestTarget.vy * timeToHit * 0.2;
       this.cachedAimAngle = Math.atan2(leadY - self.y, leadX - self.x) + this.aimJitter;
 
-      const hasLos = this.hasLineOfSight(self.x, self.y, bestTarget.x, bestTarget.y, obstacles);
+      const hasLos = bestHasLos;
       const turretAligned =
         Math.abs(Phaser.Math.Angle.Wrap(this.cachedAimAngle - self.turretAngle)) < 0.32;
       const maxFireRange = self.getEffectiveProjectileRange() * 1.01;
+      const hasRapidFire =
+        (self.abilityActiveTimer > 0 && Boolean(self.definition.activeAbility.fireRateMultiplier)) ||
+        self.hasBuff('rapid_fire');
 
       // Respect fireCooldownTimer, magazine ammo, reload state & reaction spacing before firing
       if (
@@ -297,10 +438,12 @@ export class AIController {
         hasLos &&
         turretAligned &&
         dist <= maxFireRange &&
-        Math.random() < 0.72
+        (hasRapidFire || Math.random() < 0.72)
       ) {
         this.cachedFire = true;
-        this.postShotCooldown = 0.24 + Math.random() * 0.26;
+        this.postShotCooldown = hasRapidFire
+          ? 0.14 + Math.random() * 0.12
+          : 0.24 + Math.random() * 0.26;
       }
 
       // Smart active ability trigger (only after opening grace, never while active or on cooldown)
@@ -339,10 +482,59 @@ export class AIController {
             abilityTargetX = bestTarget.x + bestTarget.vx * 0.35;
             abilityTargetY = bestTarget.y + bestTarget.vy * 0.35;
           }
-        } else if (self.definition.id === 'tesla' && dist < 190) {
-          this.cachedAbility = true;
-        } else if (self.definition.id === 'phantom' && self.hp < self.maxHp * 0.6) {
-          this.cachedAbility = true;
+        } else if (self.definition.id === 'tesla') {
+          const empRadius = self.definition.activeAbility.empRadius ?? 220;
+          let enemiesInEmp = 0;
+          let minEmpDist = Infinity;
+          let enemyUsingMoveAbility = false;
+
+          for (const other of allTanks) {
+            if (!other.alive || other.id === self.id) continue;
+            const d = Math.hypot(other.x - self.x, other.y - self.y);
+            if (d <= empRadius + other.radius) {
+              enemiesInEmp += 1;
+              if (d < minEmpDist) minEmpDist = d;
+              if (
+                other.abilityActiveTimer > 0 &&
+                Boolean(other.definition.activeAbility.speedBoostMultiplier)
+              ) {
+                enemyUsingMoveAbility = true;
+              }
+            }
+          }
+
+          // Never waste EMP Pulse with 0 enemies in radius; trigger on multi-target clusters or close pressure
+          if (
+            enemiesInEmp >= 2 ||
+            (enemiesInEmp >= 1 &&
+              (minEmpDist <= empRadius * 0.72 ||
+                enemyUsingMoveAbility ||
+                self.hp < self.maxHp * 0.58))
+          ) {
+            this.cachedAbility = true;
+          }
+        } else if (self.definition.id === 'phantom') {
+          let closeEnemies = 0;
+          for (const other of allTanks) {
+            if (!other.alive || other.id === self.id) continue;
+            if (Math.hypot(other.x - self.x, other.y - self.y) <= 340) {
+              closeEnemies += 1;
+            }
+          }
+          const incomingDanger = Boolean(threat) || closeEnemies >= 2;
+          const pressuredWhileHurt =
+            hasLos &&
+            dist <= 380 &&
+            (self.hp < self.maxHp * 0.68 || (dist <= 225 && (self.isReloading || self.ammo <= 1)));
+
+          // Only use Phase Shift when escaping a genuine threat; never waste when safe
+          if (incomingDanger || pressuredWhileHurt) {
+            this.cachedAbility = true;
+          }
+        } else if (self.definition.id === 'assault') {
+          if (hasLos && dist <= 470 && self.ammo >= 4 && !self.isReloading) {
+            this.cachedAbility = true;
+          }
         } else if (hasLos && dist < 380 && self.ammo > 0 && !self.isReloading && Math.random() < 0.15) {
           this.cachedAbility = true;
         }
@@ -376,15 +568,129 @@ export class AIController {
       }
     }
 
+    const shouldDeployMine =
+      this.engageGraceTimer <= 0 &&
+      self.mineCharges > 0 &&
+      self.mineDeployCooldown <= 0 &&
+      projectiles.getActiveMineCount(self.id) < MINE_SYSTEM_CONFIG.maxActivePerTank &&
+      ((bestTarget !== null && bestTargetDist <= 285) ||
+        (Boolean(threat) && projectiles.getActiveMineCount(self.id) === 0));
+
     return {
       moveX: this.cachedMoveX,
       moveY: this.cachedMoveY,
       aimAngle: this.cachedAimAngle,
       shouldFire: this.cachedFire,
       shouldUseAbility: this.cachedAbility,
+      shouldDeployMine,
       abilityTargetX,
       abilityTargetY,
     };
+  }
+
+  private evaluatePowerupUtility(
+    self: TankEntity,
+    pwr: ActiveWorldPowerup,
+    dist: number,
+    obstacles: ObstacleEntity[]
+  ): number {
+    // Avoid walking straight onto a priming explosive barrel for a pickup
+    for (const obs of obstacles) {
+      if (obs.alive && obs.isPriming && Math.hypot(obs.x - pwr.x, obs.y - pwr.y) < 145) {
+        return -Infinity;
+      }
+    }
+
+    const hpRatio = self.hp / Math.max(1, self.maxHp);
+    let baseValue = 0;
+
+    switch (pwr.id) {
+      case 'repair_kit':
+        if (hpRatio >= 0.92) return -Infinity;
+        baseValue = (1 - hpRatio) * 185;
+        break;
+      case 'mine_kit':
+        if (self.mineCharges >= MINE_SYSTEM_CONFIG.maxCarriedCharges) return -Infinity;
+        baseValue = self.mineCharges === 0 ? 78 : 42;
+        break;
+      case 'shield':
+        if (self.shieldHp >= 45) baseValue = 18;
+        else baseValue = hpRatio < 0.7 ? 118 : 88;
+        break;
+      case 'cooldown_boost':
+        baseValue = self.abilityCooldownTimer > 2.0 ? 86 : 36;
+        break;
+      case 'rapid_fire':
+        baseValue = self.hasBuff('rapid_fire') ? 24 : 92;
+        break;
+      case 'heavy_shell':
+        baseValue = self.hasBuff('heavy_shell') ? 24 : 90;
+        break;
+      case 'multi_shot':
+        baseValue = self.hasBuff('multi_shot') ? 22 : 84;
+        break;
+      case 'piercing_shell':
+        baseValue = self.hasBuff('piercing_shell') ? 20 : 76;
+        break;
+      case 'speed_boost':
+        baseValue = self.hasBuff('speed_boost') ? 18 : 74;
+        break;
+      case 'radar':
+        baseValue = self.hasBuff('radar') ? 16 : 68;
+        break;
+    }
+
+    if (self.personality === 'opportunistic') {
+      baseValue *= 1.15;
+    }
+    return baseValue - dist * 0.16;
+  }
+
+  private pickClearDetourAngle(
+    self: TankEntity,
+    blockedAngle: number,
+    obstacles: ObstacleEntity[],
+    arenaWidth: number,
+    arenaHeight: number
+  ): number {
+    const sign = this.strafeSign;
+    const offsets = [
+      sign * 1.05,
+      -sign * 1.05,
+      sign * 1.75,
+      -sign * 1.75,
+      sign * 2.45,
+      -sign * 2.45,
+      Math.PI,
+    ];
+    const probeDist = self.radius + 54;
+    let bestAngle = blockedAngle + sign * 1.57;
+    let bestClearScore = -Infinity;
+
+    for (const off of offsets) {
+      const cand = blockedAngle + off;
+      const px = self.x + Math.cos(cand) * probeDist;
+      const py = self.y + Math.sin(cand) * probeDist;
+      if (px < 52 || px > arenaWidth - 52 || py < 52 || py > arenaHeight - 52) continue;
+
+      let minClear = Infinity;
+      for (const obs of obstacles) {
+        if (!obs.alive || !obs.blocksMovement) continue;
+        const cx = Phaser.Math.Clamp(px, obs.left, obs.right);
+        const cy = Phaser.Math.Clamp(py, obs.top, obs.bottom);
+        const d = Math.hypot(px - cx, py - cy);
+        if (d < minClear) minClear = d;
+      }
+
+      if (minClear >= self.radius + 14) {
+        return cand;
+      }
+      if (minClear > bestClearScore) {
+        bestClearScore = minClear;
+        bestAngle = cand;
+      }
+    }
+    return bestAngle;
   }
 
   private hasLineOfSight(

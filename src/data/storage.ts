@@ -1,6 +1,7 @@
 import {
   ArenaId,
   GameSettings,
+  GraphicsQuality,
   MatchResult,
   PlayerProgression,
   TankId,
@@ -11,7 +12,11 @@ const PROGRESSION_KEY = 'tankbound_arena_progression_v1';
 const SETTINGS_KEY = 'tankbound_arena_settings_v1';
 
 export const DEFAULT_PROGRESSION: PlayerProgression = {
-  unlockedTanks: ['assault', 'fortress', 'scout', 'artillery'],
+  playerName: 'Commander',
+  level: 1,
+  xp: 0,
+  xpToNext: 100,
+  unlockedTanks: ['assault', 'fortress', 'scout', 'artillery', 'tesla', 'phantom'],
   selectedTank: 'assault',
   selectedArena: 'training_grounds',
   scrap: 0,
@@ -24,6 +29,12 @@ export const DEFAULT_PROGRESSION: PlayerProgression = {
 export const DEFAULT_SETTINGS: GameSettings = {
   soundEnabled: true,
   soundVolume: 0.65,
+  musicEnabled: true,
+  musicVolume: 0.4,
+  graphicsQuality: 'high',
+  screenShakeEnabled: true,
+  vibrationEnabled: true,
+  controlSensitivity: 1.0,
   showTouchControls: 'always',
   autoFireOnAim: false,
   lowDetailMode: false,
@@ -38,9 +49,9 @@ export function loadProgression(): PlayerProgression {
     const parsed = JSON.parse(raw) as Partial<PlayerProgression>;
     const unlocked: TankId[] = Array.isArray(parsed.unlockedTanks)
       ? parsed.unlockedTanks.filter((id): id is TankId => Boolean(TANK_DEFINITIONS[id]?.implemented))
-      : ['assault', 'fortress', 'scout', 'artillery'];
+      : ['assault', 'fortress', 'scout', 'artillery', 'tesla', 'phantom'];
     for (const def of TANK_LIST) {
-      if (def.implemented && (def.isStarter || def.unlockCost === 0) && !unlocked.includes(def.id)) {
+      if (def.implemented && !unlocked.includes(def.id)) {
         unlocked.push(def.id);
       }
     }
@@ -58,7 +69,16 @@ export function loadProgression(): PlayerProgression {
         ? parsed.selectedArena
         : 'training_grounds';
 
+    const rawName = typeof parsed.playerName === 'string' ? parsed.playerName.trim() : '';
+
     return {
+      playerName: rawName.length > 0 ? rawName.slice(0, 20) : DEFAULT_PROGRESSION.playerName,
+      level: typeof parsed.level === 'number' && parsed.level >= 1 ? Math.floor(parsed.level) : 1,
+      xp: typeof parsed.xp === 'number' && parsed.xp >= 0 ? Math.floor(parsed.xp) : 0,
+      xpToNext:
+        typeof parsed.xpToNext === 'number' && parsed.xpToNext > 0
+          ? Math.floor(parsed.xpToNext)
+          : 100,
       unlockedTanks: unlocked,
       selectedTank,
       selectedArena,
@@ -109,6 +129,15 @@ export function loadSettings(): GameSettings {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
     const parsed = JSON.parse(raw) as Partial<GameSettings>;
+
+    const validQualities: GraphicsQuality[] = ['low', 'medium', 'high'];
+    const graphicsQuality: GraphicsQuality =
+      parsed.graphicsQuality && validQualities.includes(parsed.graphicsQuality)
+        ? parsed.graphicsQuality
+        : parsed.lowDetailMode === true
+        ? 'low'
+        : DEFAULT_SETTINGS.graphicsQuality;
+
     return {
       soundEnabled:
         typeof parsed.soundEnabled === 'boolean' ? parsed.soundEnabled : DEFAULT_SETTINGS.soundEnabled,
@@ -116,6 +145,27 @@ export function loadSettings(): GameSettings {
         typeof parsed.soundVolume === 'number'
           ? Math.min(1, Math.max(0, parsed.soundVolume))
           : DEFAULT_SETTINGS.soundVolume,
+      musicEnabled:
+        typeof parsed.musicEnabled === 'boolean'
+          ? parsed.musicEnabled
+          : DEFAULT_SETTINGS.musicEnabled,
+      musicVolume:
+        typeof parsed.musicVolume === 'number'
+          ? Math.min(1, Math.max(0, parsed.musicVolume))
+          : DEFAULT_SETTINGS.musicVolume,
+      graphicsQuality,
+      screenShakeEnabled:
+        typeof parsed.screenShakeEnabled === 'boolean'
+          ? parsed.screenShakeEnabled
+          : DEFAULT_SETTINGS.screenShakeEnabled,
+      vibrationEnabled:
+        typeof parsed.vibrationEnabled === 'boolean'
+          ? parsed.vibrationEnabled
+          : DEFAULT_SETTINGS.vibrationEnabled,
+      controlSensitivity:
+        typeof parsed.controlSensitivity === 'number'
+          ? Math.min(1.5, Math.max(0.6, parsed.controlSensitivity))
+          : DEFAULT_SETTINGS.controlSensitivity,
       showTouchControls:
         parsed.showTouchControls === 'auto' || parsed.showTouchControls === 'always'
           ? parsed.showTouchControls
@@ -124,10 +174,7 @@ export function loadSettings(): GameSettings {
         typeof parsed.autoFireOnAim === 'boolean'
           ? parsed.autoFireOnAim
           : DEFAULT_SETTINGS.autoFireOnAim,
-      lowDetailMode:
-        typeof parsed.lowDetailMode === 'boolean'
-          ? parsed.lowDetailMode
-          : DEFAULT_SETTINGS.lowDetailMode,
+      lowDetailMode: graphicsQuality === 'low',
       matchDurationSec:
         typeof parsed.matchDurationSec === 'number' &&
         parsed.matchDurationSec >= 60 &&
@@ -146,10 +193,20 @@ export function loadSettings(): GameSettings {
 
 export function saveSettings(settings: GameSettings): void {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    const normalized: GameSettings = {
+      ...settings,
+      lowDetailMode: settings.graphicsQuality === 'low',
+    };
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(normalized));
   } catch {
     // Ignore storage errors
   }
+}
+
+export function resetSettingsToDefault(): GameSettings {
+  const defaults: GameSettings = { ...DEFAULT_SETTINGS };
+  saveSettings(defaults);
+  return defaults;
 }
 
 export function resetAllLocalData(): {

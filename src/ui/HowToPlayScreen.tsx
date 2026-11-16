@@ -67,10 +67,10 @@ export function HowToPlayScreen({ onBack }: HowToPlayScreenProps) {
             </h2>
             <ul className="space-y-2 text-xs sm:text-sm text-[#F3EFE6]/80 leading-relaxed">
               <li>
-                <strong className="text-[#F3EFE6]">Touchscreen (Landscape):</strong> Use the left joystick to drive in any direction and the right joystick to rotate your turret independently. Tap <strong>FIRE</strong> to shoot, <strong>RELOAD</strong> to reload early, and <strong>ABILITY</strong> to trigger your tank special.
+                <strong className="text-[#F3EFE6]">Touchscreen (Landscape):</strong> Use the left joystick to drive in any direction and the right joystick to rotate your turret independently. Tap <strong>FIRE</strong> to shoot, <strong>RELOAD</strong> to reload early, <strong>ABILITY</strong> to trigger your tank special, and <strong>MINE</strong> when holding Mine Kit charges.
               </li>
               <li>
-                <strong className="text-[#F3EFE6]">Keyboard & Mouse:</strong> Move with <strong>WASD</strong> or <strong>Arrow Keys</strong>, aim with the mouse cursor, shoot with <strong>Left Click</strong> or <strong>Space</strong>, reload with <strong>R</strong>, activate ability with <strong>E</strong> or <strong>Shift</strong>, and pause with <strong>P</strong> or <strong>Esc</strong>.
+                <strong className="text-[#F3EFE6]">Keyboard & Mouse:</strong> Move with <strong>WASD</strong> or <strong>Arrow Keys</strong>, aim with the mouse cursor, shoot with <strong>Left Click</strong> or <strong>Space</strong>, reload with <strong>R</strong>, activate ability with <strong>E</strong> or <strong>Shift</strong>, drop mines with <strong>F</strong> or <strong>Q</strong>, and pause with <strong>P</strong> or <strong>Esc</strong>.
               </li>
             </ul>
           </section>
@@ -88,7 +88,7 @@ export function HowToPlayScreen({ onBack }: HowToPlayScreenProps) {
                 Be the last surviving tank to claim <strong>Victory</strong>. If the match clock expires first, the survivor with the highest remaining HP wins (eliminations break ties).
               </li>
               <li>
-                Earn <strong>Scrap</strong> from every match based on placement and eliminations to unlock additional tank classes.
+                All six tank classes are ready to deploy in the <strong>Garage</strong> and <strong>Tank Collection</strong>; matches also tally <strong>Scrap</strong> based on placement and eliminations.
               </li>
             </ul>
           </section>

@@ -17,6 +17,7 @@ export interface PlayerInputState {
   firePressed: boolean;
   abilityPressed: boolean;
   reloadPressed: boolean;
+  deployMinePressed: boolean;
 }
 
 export interface MatchLaunchConfig {
@@ -44,6 +45,7 @@ class GameBridgeBus {
     firePressed: false,
     abilityPressed: false,
     reloadPressed: false,
+    deployMinePressed: false,
   };
 
   private hudListeners = new Set<HudListener>();
@@ -72,6 +74,7 @@ class GameBridgeBus {
     this.input.firePressed = false;
     this.input.abilityPressed = false;
     this.input.reloadPressed = false;
+    this.input.deployMinePressed = false;
   }
 
   getLastHudSnapshot(): HUDStateSnapshot | null {

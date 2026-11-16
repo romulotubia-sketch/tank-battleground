@@ -4,6 +4,7 @@ interface TouchJoystickProps {
   label: string;
   accentColor: string;
   size?: number;
+  sensitivity?: number;
   onChange: (nx: number, ny: number, active: boolean) => void;
 }
 
@@ -11,6 +12,7 @@ export function TouchJoystick({
   label,
   accentColor,
   size = 112,
+  sensitivity = 1.0,
   onChange,
 }: TouchJoystickProps) {
   const baseRef = useRef<HTMLDivElement | null>(null);
@@ -45,9 +47,15 @@ export function TouchJoystick({
     }
 
     knob.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
-    const nx = dx / maxTravel;
-    const ny = dy / maxTravel;
-    onChange(nx, ny, true);
+    const rawNx = dx / maxTravel;
+    const rawNy = dy / maxTravel;
+    const rawMag = Math.hypot(rawNx, rawNy);
+    if (rawMag > 0.001) {
+      const scaledMag = Math.min(1, rawMag * sensitivity);
+      onChange((rawNx / rawMag) * scaledMag, (rawNy / rawMag) * scaledMag, true);
+    } else {
+      onChange(0, 0, true);
+    }
   };
 
   const resetStick = () => {

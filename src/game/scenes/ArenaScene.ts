@@ -1,17 +1,16 @@
 import Phaser from 'phaser';
 import { ensureProceduralTextures } from '../../assets/ProceduralTextureGenerator';
-import { POWERUP_DEFINITIONS } from '../../data/powerups';
+import { MINE_SYSTEM_CONFIG, POWERUP_DEFINITIONS } from '../../data/powerups';
 import { TANK_DEFINITIONS, TANK_LIST } from '../../data/tanks';
 import { platformBridge } from '../../services/bridge/PlaygamaBridgeAdapter';
 import {
-  ActiveBuffSnapshot,
   AIPersonality,
   ArenaDefinition,
   HUDStateSnapshot,
   MatchResult,
   TankId,
 } from '../../types/game';
-import { activateTankAbility, fireTankWeapon } from '../abilities/AbilitySystem';
+import { activateTankAbility, deployTankMine, fireTankWeapon } from '../abilities/AbilitySystem';
 import { AIController } from '../ai/AIController';
 import { ARENA_DEFINITIONS, ARENA_HEIGHT, ARENA_WIDTH } from '../arenas/arenaLayouts';
 import { ObstacleEntity } from '../entities/ObstacleEntity';
@@ -21,6 +20,7 @@ import { PowerupManager } from '../powerups/PowerupManager';
 import { ProjectilePool } from '../projectiles/ProjectilePool';
 import { EffectsPool } from '../systems/EffectsPool';
 import { soundFX } from '../systems/SoundFX';
+import { triggerHaptic } from '../../utils/haptics';
 
 const BOT_CALLSIGNS = [
   'Viper',
@@ -65,6 +65,9 @@ export class ArenaScene extends Phaser.Scene {
   private hudPushTimer = 0;
   private killFeedText: string | null = null;
   private killFeedTimer = 0;
+  private recentPickupName: string | null = null;
+  private recentPickupColor: string | null = null;
+  private recentPickupTimer = 0;
   private pendingDefeatTimer: number | null = null;
   private manualAimHoldTimer = 0;
   private playerEliminatedAtSec: number | null = null;
@@ -88,6 +91,8 @@ export class ArenaScene extends Phaser.Scene {
     RIGHT: Phaser.Input.Keyboard.Key;
     SPACE: Phaser.Input.Keyboard.Key;
     E: Phaser.Input.Keyboard.Key;
+    F: Phaser.Input.Keyboard.Key;
+    Q: Phaser.Input.Keyboard.Key;
     R: Phaser.Input.Keyboard.Key;
     SHIFT: Phaser.Input.Keyboard.Key;
     P: Phaser.Input.Keyboard.Key;
@@ -111,6 +116,12 @@ export class ArenaScene extends Phaser.Scene {
       settings: {
         soundEnabled: true,
         soundVolume: 0.65,
+        musicEnabled: true,
+        musicVolume: 0.4,
+        graphicsQuality: 'high',
+        screenShakeEnabled: true,
+        vibrationEnabled: true,
+        controlSensitivity: 1.0,
         showTouchControls: 'always',
         autoFireOnAim: false,
         lowDetailMode: false,
@@ -128,6 +139,9 @@ export class ArenaScene extends Phaser.Scene {
     this.hudPushTimer = 0;
     this.killFeedText = null;
     this.killFeedTimer = 0;
+    this.recentPickupName = null;
+    this.recentPickupColor = null;
+    this.recentPickupTimer = 0;
     this.pendingDefeatTimer = null;
     this.manualAimHoldTimer = 0;
     this.playerEliminatedAtSec = null;
@@ -147,12 +161,18 @@ export class ArenaScene extends Phaser.Scene {
     ensureProceduralTextures(this);
     soundFX.configure(
       this.launchConfig.settings.soundEnabled,
-      this.launchConfig.settings.soundVolume
+      this.launchConfig.settings.soundVolume,
+      this.launchConfig.settings.musicEnabled ?? true,
+      this.launchConfig.settings.musicVolume ?? 0.4
     );
+    soundFX.setMusicMode('battle');
 
     this.drawArenaGround();
 
-    this.effects = new EffectsPool(this, this.launchConfig.settings.lowDetailMode);
+    const quality =
+      this.launchConfig.settings.graphicsQuality ??
+      (this.launchConfig.settings.lowDetailMode ? 'low' : 'high');
+    this.effects = new EffectsPool(this, quality);
     this.projectiles = new ProjectilePool(this, 120);
     this.powerups = new PowerupManager(this);
 
@@ -185,8 +205,9 @@ export class ArenaScene extends Phaser.Scene {
     );
     this.tanks.push(this.playerTank);
 
-    // Bot roster: mostly assault/varied classes for authentic battleground mix
-    const botClasses: TankId[] = ['assault', 'assault', 'scout', 'fortress', 'artillery', 'tesla', 'phantom'];
+    // Bot roster: all six implemented tank classes represented across the 7 AI opponents
+    const botClasses: TankId[] = ['assault', 'scout', 'fortress', 'artillery', 'tesla', 'phantom', 'assault'];
+    const shuffledPersonalities = Phaser.Utils.Array.Shuffle([...BOT_PERSONALITIES]);
     for (let i = 1; i < 8; i++) {
       const sp = shuffledBotSpawns[i - 1];
       const botTankId = botClasses[i - 1] ?? TANK_LIST[i % TANK_LIST.length].id;
@@ -201,7 +222,7 @@ export class ArenaScene extends Phaser.Scene {
         sp.x,
         sp.y,
         sp.angle,
-        BOT_PERSONALITIES[i - 1]
+        shuffledPersonalities[i - 1] ?? 'tactical'
       );
       botTank.abilityCooldownTimer = 5.5 + Math.random() * 4.0;
       // Hide all enemy tanks immediately during the 3-second preparation phase
@@ -230,14 +251,22 @@ export class ArenaScene extends Phaser.Scene {
     this.unsubSettings = gameBridge.onSettingsChange((nextSettings) => {
       if (!this.sceneActive) return;
       this.launchConfig = { ...this.launchConfig, settings: nextSettings };
-      soundFX.configure(nextSettings.soundEnabled, nextSettings.soundVolume);
-      this.effects.setLowDetail(nextSettings.lowDetailMode);
+      soundFX.configure(
+        nextSettings.soundEnabled,
+        nextSettings.soundVolume,
+        nextSettings.musicEnabled,
+        nextSettings.musicVolume
+      );
+      const nextQuality =
+        nextSettings.graphicsQuality ?? (nextSettings.lowDetailMode ? 'low' : 'high');
+      this.effects.setGraphicsQuality(nextQuality);
     });
 
     window.addEventListener('blur', this.handleWindowBlur);
 
     const cleanupBridgeListeners = () => {
       this.sceneActive = false;
+      soundFX.stopAllLoops();
       if (this.unsubCommand) {
         this.unsubCommand();
         this.unsubCommand = undefined;
@@ -267,7 +296,7 @@ export class ArenaScene extends Phaser.Scene {
     g.fillRect(0, 0, w, h);
 
     // Subtle hand-drawn grid lines
-    g.lineStyle(1.5, Phaser.Display.Color.HexStringToColor(this.arena.groundGridColor).color, 0.55);
+    g.lineStyle(1.5, Phaser.Display.Color.HexStringToColor(this.arena.groundGridColor).color, 0.5);
     const step = 80;
     for (let x = step; x < w; x += step) {
       g.lineBetween(x, 0, x, h);
@@ -276,9 +305,72 @@ export class ArenaScene extends Phaser.Scene {
       g.lineBetween(0, y, w, y);
     }
 
-    // Center tactical ring motif
-    g.lineStyle(2.5, Phaser.Display.Color.HexStringToColor(this.arena.groundGridColor).color, 0.7);
-    g.strokeCircle(w / 2, h / 2, 130);
+    // Distinct visual-only environmental terrain decoration (never affects movement or hitboxes)
+    if (this.arena.id === 'training_grounds') {
+      // Military proving yard lane pads & central range ring
+      g.fillStyle(0xb8a782, 0.45);
+      g.fillRect(740, 340, 600, 520);
+      g.lineStyle(3, 0x8f7f5f, 0.65);
+      g.strokeRect(740, 340, 600, 520);
+      g.lineStyle(2.5, 0x8f7f5f, 0.7);
+      g.strokeCircle(w / 2, h / 2, 135);
+      g.lineStyle(1.5, 0xe08e26, 0.42);
+      g.strokeCircle(w / 2, h / 2, 95);
+    } else if (this.arena.id === 'industrial_zone') {
+      // Warehouse floor slabs & hazard lane bays
+      g.fillStyle(0x7c8387, 0.42);
+      g.fillRect(290, 250, 390, 700);
+      g.fillRect(1400, 250, 390, 700);
+      g.lineStyle(3, 0xeab308, 0.35);
+      g.strokeRect(290, 250, 390, 700);
+      g.strokeRect(1400, 250, 390, 700);
+      // Central refinery platform ring
+      g.fillStyle(0x757c80, 0.5);
+      g.fillCircle(w / 2, h / 2, 150);
+      g.lineStyle(3, 0x4b5563, 0.75);
+      g.strokeCircle(w / 2, h / 2, 150);
+      g.lineStyle(2, 0x38bdf8, 0.32);
+      g.strokeCircle(w / 2, h / 2, 118);
+    } else if (this.arena.id === 'wasteland') {
+      // Uneven-looking desert patches, dry lakebed cracks, and scorched dune ridges (purely visual)
+      const sandPatches: Array<[number, number, number, number, number]> = [
+        [360, 240, 140, 0xb88b5d, 0.48],
+        [1710, 960, 155, 0xb88b5d, 0.48],
+        [1040, 600, 195, 0xb28355, 0.42],
+        [560, 600, 115, 0x9b7249, 0.45],
+        [1520, 600, 115, 0x9b7249, 0.45],
+        [1420, 240, 120, 0xd1a97c, 0.38],
+        [660, 950, 130, 0xd1a97c, 0.38],
+      ];
+      for (const [px, py, pr, col, alpha] of sandPatches) {
+        g.fillStyle(col, alpha);
+        g.fillCircle(px, py, pr);
+      }
+      // Dry canyon earth fissures & wind-carved dune streaks
+      g.lineStyle(2, 0x7c5836, 0.42);
+      const cracks: Array<[number, number, number, number, number, number]> = [
+        [240, 340, 310, 385, 395, 368],
+        [1680, 260, 1755, 315, 1840, 290],
+        [890, 410, 945, 455, 1005, 438],
+        [1120, 740, 1185, 795, 1245, 775],
+        [290, 860, 365, 915, 430, 895],
+        [1640, 850, 1715, 815, 1790, 845],
+      ];
+      for (const [x1, y1, x2, y2, x3, y3] of cracks) {
+        g.beginPath();
+        g.moveTo(x1, y1);
+        g.lineTo(x2, y2);
+        g.lineTo(x3, y3);
+        g.strokePath();
+      }
+      // Scattered small desert pebbles (cosmetic flecks)
+      g.fillStyle(0x6e4e30, 0.38);
+      for (let i = 0; i < 36; i++) {
+        const px = 90 + ((i * 293) % (w - 180));
+        const py = 90 + ((i * 197) % (h - 180));
+        g.fillCircle(px, py, 3 + (i % 3));
+      }
+    }
 
     // Arena steel/ink border wall
     g.lineStyle(18, Phaser.Display.Color.HexStringToColor(this.arena.borderColor).color, 1);
@@ -300,6 +392,8 @@ export class ArenaScene extends Phaser.Scene {
         RIGHT: Phaser.Input.Keyboard.KeyCodes.RIGHT,
         SPACE: Phaser.Input.Keyboard.KeyCodes.SPACE,
         E: Phaser.Input.Keyboard.KeyCodes.E,
+        F: Phaser.Input.Keyboard.KeyCodes.F,
+        Q: Phaser.Input.Keyboard.KeyCodes.Q,
         R: Phaser.Input.Keyboard.KeyCodes.R,
         SHIFT: Phaser.Input.Keyboard.KeyCodes.SHIFT,
         P: Phaser.Input.Keyboard.KeyCodes.P,
@@ -322,6 +416,16 @@ export class ArenaScene extends Phaser.Scene {
       keys.R.on('down', () => {
         if (!this.paused && !this.matchEnded && this.prepRemainingSec <= 0) {
           gameBridge.input.reloadPressed = true;
+        }
+      });
+      keys.F.on('down', () => {
+        if (!this.paused && !this.matchEnded && this.prepRemainingSec <= 0) {
+          gameBridge.input.deployMinePressed = true;
+        }
+      });
+      keys.Q.on('down', () => {
+        if (!this.paused && !this.matchEnded && this.prepRemainingSec <= 0) {
+          gameBridge.input.deployMinePressed = true;
         }
       });
     }
@@ -367,6 +471,7 @@ export class ArenaScene extends Phaser.Scene {
     if (value) {
       this.tweens.pauseAll();
       gameBridge.resetInput();
+      soundFX.updateMovementAudio(0, false);
     } else {
       this.tweens.resumeAll();
     }
@@ -386,6 +491,7 @@ export class ArenaScene extends Phaser.Scene {
       gameBridge.input.firePressed = false;
       gameBridge.input.abilityPressed = false;
       gameBridge.input.reloadPressed = false;
+      gameBridge.input.deployMinePressed = false;
 
       // Keep enemy tanks hidden and player stationary at spawn
       for (const tank of this.tanks) {
@@ -432,6 +538,14 @@ export class ArenaScene extends Phaser.Scene {
       if (this.killFeedTimer <= 0) this.killFeedText = null;
     }
 
+    if (this.recentPickupTimer > 0) {
+      this.recentPickupTimer -= dt;
+      if (this.recentPickupTimer <= 0) {
+        this.recentPickupName = null;
+        this.recentPickupColor = null;
+      }
+    }
+
     if (this.pendingDefeatTimer !== null) {
       this.pendingDefeatTimer -= dt;
       if (this.pendingDefeatTimer <= 0) {
@@ -440,8 +554,11 @@ export class ArenaScene extends Phaser.Scene {
       }
     }
 
-    // 1. Player controls
+    // 1. Player controls & movement audio
     this.updatePlayerTank(dt);
+    const playerSpd = Math.hypot(this.playerTank.vx, this.playerTank.vy);
+    const playerMaxSpd = Math.max(1, this.playerTank.getEffectiveMoveSpeed());
+    soundFX.updateMovementAudio(playerSpd / playerMaxSpd, this.playerTank.alive);
 
     // 2. AI opponents
     for (const tank of this.tanks) {
@@ -488,6 +605,17 @@ export class ArenaScene extends Phaser.Scene {
           }
         );
       }
+      if (decision.shouldDeployMine) {
+        deployTankMine(
+          tank,
+          this.tanks,
+          this.obstacles,
+          this.projectiles,
+          this.effects,
+          this.arena.width,
+          this.arena.height
+        );
+      }
     }
 
     // 3. Tank-vs-Tank separation so tanks never overlap
@@ -505,6 +633,22 @@ export class ArenaScene extends Phaser.Scene {
       this.handleTankEliminated
     );
 
+    // 4b. Ambient water shimmer / bush sway & priming explosive barrel fuses
+    const isLowQuality =
+      this.launchConfig.settings.graphicsQuality === 'low' ||
+      this.launchConfig.settings.lowDetailMode;
+    for (const obs of this.obstacles) {
+      if (!obs.alive) continue;
+      if (!isLowQuality && (obs.type === 'water' || obs.type === 'bush')) {
+        obs.updateAmbient(this.elapsedMatchSec);
+      }
+      if (!obs.isPriming) continue;
+      const blast = obs.updateFuse(dt, this.effects);
+      if (blast) {
+        this.handleBarrelExplosion(blast.x, blast.y, blast.attackerId);
+      }
+    }
+
     // 5. Update powerups
     this.powerups.update(
       dt,
@@ -512,22 +656,49 @@ export class ArenaScene extends Phaser.Scene {
       this.arena.height,
       this.tanks,
       this.obstacles,
-      this.projectiles,
-      this.effects
+      this.arena.spawns,
+      this.effects,
+      (collector, id, result) => {
+        if (collector.isPlayer && result.applied) {
+          const def = POWERUP_DEFINITIONS[id];
+          this.recentPickupName =
+            id === 'repair_kit' && result.healedAmount > 0
+              ? `${def.name} (+${result.healedAmount} HP)`
+              : id === 'mine_kit'
+              ? `${def.name} (+${result.minesAdded})`
+              : def.name;
+          this.recentPickupColor = def.color;
+          this.recentPickupTimer = 2.2;
+          this.emitHudSnapshot();
+        }
+      }
     );
 
     // 6. Update tank timers & visual state
-    const playerRadar = this.playerTank.alive && this.playerTank.hasBuff('radar');
+    const playerRadar =
+      this.prepRemainingSec <= 0 && this.playerTank.alive && this.playerTank.hasBuff('radar');
+    const playerRadarRadius = playerRadar ? this.playerTank.effectsManager.getRadarRadius() : 0;
     for (const tank of this.tanks) {
-      tank.updateTimersAndVisuals(dt, playerRadar, false);
+      tank.updateTimersAndVisuals(
+        dt,
+        playerRadar,
+        false,
+        this.effects,
+        this.playerTank.x,
+        this.playerTank.y,
+        playerRadarRadius
+      );
     }
 
     // 7. Update pooled effects
     this.effects.update(dt);
 
     // 8. Check win/timer end conditions
-    const aliveTanks = this.tanks.filter((t) => t.alive);
-    if (this.playerTank.alive && aliveTanks.length === 1) {
+    let aliveCount = 0;
+    for (const t of this.tanks) {
+      if (t.alive) aliveCount += 1;
+    }
+    if (this.playerTank.alive && aliveCount === 1) {
       this.finishMatch('last_standing');
       return;
     }
@@ -583,12 +754,14 @@ export class ArenaScene extends Phaser.Scene {
     const hasFireInput = inp.firing || inp.firePressed || spaceDown || spaceJustDown;
 
     // Independent turret aiming (holds manual aim briefly so touch players can move thumb from Aim stick to Fire)
+    const sensitivity = this.launchConfig.settings.controlSensitivity ?? 1.0;
     let shouldAutoFire = false;
     const maxRange = this.playerTank.getEffectiveProjectileRange();
     if (inp.aimActive && Math.hypot(inp.aimX, inp.aimY) > 0.15) {
+      inp.mouseAimActive = false;
       const aimMag = Math.min(1, Math.hypot(inp.aimX, inp.aimY));
       const aimAngle = Math.atan2(inp.aimY, inp.aimX);
-      this.playerTank.aimTurretToward(aimAngle, dt);
+      this.playerTank.aimTurretToward(aimAngle, dt, sensitivity);
       this.lastAimDistance = Phaser.Math.Linear(140, maxRange * 0.92, (aimMag - 0.15) / 0.85);
       this.manualAimHoldTimer = 2.5;
       if (this.launchConfig.settings.autoFireOnAim && aimMag > 0.72) {
@@ -599,18 +772,19 @@ export class ArenaScene extends Phaser.Scene {
       const dx = worldPt.x - this.playerTank.x;
       const dy = worldPt.y - this.playerTank.y;
       const aimAngle = Math.atan2(dy, dx);
-      this.playerTank.aimTurretToward(aimAngle, dt);
+      this.playerTank.aimTurretToward(aimAngle, dt, sensitivity);
       this.lastAimDistance = Phaser.Math.Clamp(Math.hypot(dx, dy), 95, maxRange);
       this.manualAimHoldTimer = 2.5;
     } else if (hasFireInput) {
       this.manualAimHoldTimer = Math.max(this.manualAimHoldTimer, 1.5);
     } else if (this.manualAimHoldTimer <= 0 && Math.hypot(mx, my) > 0.2) {
       // Smoothly align turret forward only after manual aim/fire pause
-      this.playerTank.aimTurretToward(Math.atan2(my, mx), dt * 0.55);
+      this.playerTank.aimTurretToward(Math.atan2(my, mx), dt * 0.55, sensitivity);
     }
 
     // Update Artillery Shell Barrage aiming reticle when ready
-    const barrageTarget = this.computeArtilleryTargetPoint(inp.mouseAimActive);
+    const useMouseForBarrage = !inp.aimActive && inp.mouseAimActive;
+    const barrageTarget = this.computeArtilleryTargetPoint(useMouseForBarrage);
     const showReticle =
       this.playerTank.definition.id === 'artillery' &&
       this.prepRemainingSec <= 0 &&
@@ -631,7 +805,9 @@ export class ArenaScene extends Phaser.Scene {
 
     if (hasFireInput || shouldAutoFire) {
       const fireStatus = fireTankWeapon(this.playerTank, this.projectiles, this.effects);
-      if (
+      if (fireStatus === 'fired') {
+        triggerHaptic(this.launchConfig.settings.vibrationEnabled, 12);
+      } else if (
         (fireStatus === 'empty' || fireStatus === 'reloading') &&
         (inp.firePressed || spaceJustDown || this.emptyFeedbackTimer <= 0)
       ) {
@@ -661,6 +837,24 @@ export class ArenaScene extends Phaser.Scene {
             arenaWidth: this.arena.width,
             arenaHeight: this.arena.height,
           }
+        )
+      ) {
+        triggerHaptic(this.launchConfig.settings.vibrationEnabled, 22);
+        this.emitHudSnapshot();
+      }
+    }
+
+    if (inp.deployMinePressed) {
+      inp.deployMinePressed = false;
+      if (
+        deployTankMine(
+          this.playerTank,
+          this.tanks,
+          this.obstacles,
+          this.projectiles,
+          this.effects,
+          this.arena.width,
+          this.arena.height
         )
       ) {
         this.emitHudSnapshot();
@@ -720,12 +914,16 @@ export class ArenaScene extends Phaser.Scene {
   }
 
   private handleBarrelExplosion = (bx: number, by: number, attackerId: string): void => {
-    if (this.matchEnded) return;
+    if (!this.sceneActive || this.matchEnded) return;
     const blastRadius = 125;
     this.effects.spawnDestruction(bx, by, 0xf97316, blastRadius);
     soundFX.playExplosion();
-    if (!this.launchConfig.settings.lowDetailMode) {
-      this.cameras.main.shake(150, 0.008);
+    const allowShake =
+      (this.launchConfig.settings.screenShakeEnabled ?? true) &&
+      this.launchConfig.settings.graphicsQuality !== 'low' &&
+      !this.launchConfig.settings.lowDetailMode;
+    if (allowShake) {
+      this.cameras.main.shake(120, 0.006);
     }
 
     const attacker = this.tanks.find((t) => t.id === attackerId);
@@ -736,17 +934,23 @@ export class ArenaScene extends Phaser.Scene {
       if (dist <= blastRadius + tank.radius) {
         const falloff = 1 - Math.min(0.6, dist / (blastRadius + tank.radius));
         const dmg = Math.round(52 * falloff);
-        const res = tank.takeDamage(dmg);
+        const res = tank.takeDamage(dmg, 'explosion');
         if (attacker && tank.id !== attacker.id) attacker.damageDealt += res.actualDamage;
+        if ((tank.isPlayer || attacker?.isPlayer) && res.actualDamage > 0) {
+          this.effects.spawnDamageNumber(tank.x, tank.y, res.actualDamage, 'explosion');
+          if (tank.isPlayer) {
+            triggerHaptic(this.launchConfig.settings.vibrationEnabled, 30);
+          }
+        }
         if (res.killed) this.handleTankEliminated(tank, attackerId);
       }
     }
 
-    // Chain-react adjacent destructibles & barrels
+    // Chain-react adjacent destructibles & prime nearby barrels with visible warning
     for (const obs of this.obstacles) {
       if (!obs.alive || !obs.destructible) continue;
       if (Math.hypot(obs.x - bx, obs.y - by) <= blastRadius) {
-        const destroyed = obs.damage(45, this);
+        const destroyed = obs.damage(45, this, attackerId);
         if (destroyed && obs.type === 'barrel') {
           this.time.delayedCall(90, () => this.handleBarrelExplosion(obs.x, obs.y, attackerId));
         }
@@ -767,10 +971,22 @@ export class ArenaScene extends Phaser.Scene {
     }
     this.killFeedTimer = 3.0;
 
+    const playerInvolved = victim.isPlayer || Boolean(attacker?.isPlayer);
     this.effects.spawnDestruction(victim.x, victim.y, 0xef4444, 72);
-    soundFX.playExplosion();
+    soundFX.playElimination(playerInvolved);
+    const allowShake =
+      (this.launchConfig.settings.screenShakeEnabled ?? true) &&
+      this.launchConfig.settings.graphicsQuality !== 'low' &&
+      !this.launchConfig.settings.lowDetailMode;
+    if (playerInvolved && allowShake) {
+      this.cameras.main.shake(105, 0.0045);
+    }
+    if (playerInvolved) {
+      triggerHaptic(this.launchConfig.settings.vibrationEnabled, victim.isPlayer ? [45, 35, 60] : 28);
+    }
 
     if (victim.isPlayer && this.pendingDefeatTimer === null && !this.matchEnded) {
+      soundFX.updateMovementAudio(0, false);
       this.playerEliminatedAtSec = this.elapsedMatchSec;
       this.pendingDefeatTimer = 0.85;
     }
@@ -781,7 +997,17 @@ export class ArenaScene extends Phaser.Scene {
     if (this.matchEnded) return;
     this.matchEnded = true;
     gameBridge.resetInput();
+    soundFX.stopAllLoops();
     platformBridge.notifyGameplayStop();
+
+    this.powerups.clear();
+    this.projectiles.clearAll();
+    for (const t of this.tanks) {
+      t.clearTemporaryEffects();
+    }
+    this.recentPickupName = null;
+    this.recentPickupColor = null;
+    this.recentPickupTimer = 0;
 
     // Rank all tanks: alive tanks sorted by HP desc then eliminations desc; dead tanks by eliminatedAtRank
     const ranked = [...this.tanks].sort((a, b) => {
@@ -833,18 +1059,7 @@ export class ArenaScene extends Phaser.Scene {
   private emitHudSnapshot(): void {
     if (!this.sceneActive || !this.playerTank) return;
     const aliveCount = this.tanks.filter((t) => t.alive).length;
-    const activeBuffs: ActiveBuffSnapshot[] = [];
-    this.playerTank.buffs.forEach((buff) => {
-      const def = POWERUP_DEFINITIONS[buff.id];
-      activeBuffs.push({
-        id: buff.id,
-        name: def.name,
-        shortLabel: def.shortLabel,
-        remainingSec: buff.remainingSec,
-        totalSec: buff.totalSec,
-        color: def.color,
-      });
-    });
+    const activeBuffs = this.playerTank.effectsManager.toHudSnapshots();
 
     const isPreparing = this.prepRemainingSec > 0;
     const prepLabel = isPreparing
@@ -852,6 +1067,21 @@ export class ArenaScene extends Phaser.Scene {
       : this.goBannerTimer > 0
       ? 'GO!'
       : null;
+
+    const radarActive = !isPreparing && this.playerTank.alive && this.playerTank.hasBuff('radar');
+    const radarRemainingSec = radarActive
+      ? this.playerTank.effectsManager.getRemainingSec('radar')
+      : 0;
+    const radarRadius = radarActive ? this.playerTank.effectsManager.getRadarRadius() : 0;
+    let radarDetectedCount = 0;
+    if (radarActive && radarRadius > 0) {
+      for (const t of this.tanks) {
+        if (!t.alive || t.isPlayer) continue;
+        if (Math.hypot(t.x - this.playerTank.x, t.y - this.playerTank.y) <= radarRadius) {
+          radarDetectedCount += 1;
+        }
+      }
+    }
 
     const snapshot: HUDStateSnapshot = {
       tankId: this.playerTank.definition.id,
@@ -874,8 +1104,18 @@ export class ArenaScene extends Phaser.Scene {
       abilityActiveSec: this.playerTank.abilityActiveTimer,
       abilityName: this.playerTank.definition.activeAbility.name,
       activeBuffs,
+      mineCharges: this.playerTank.mineCharges,
+      maxMineCharges: MINE_SYSTEM_CONFIG.maxCarriedCharges,
+      activeMineCount: this.projectiles.getActiveMineCount(this.playerTank.id),
       isConcealed: this.playerTank.concealed,
-      radarActive: !isPreparing && this.playerTank.hasBuff('radar'),
+      isPhased: this.playerTank.phaseCloaked,
+      isSlowed: this.playerTank.isSlowed,
+      slowRemainingSec: this.playerTank.slowRemainingSec,
+      radarActive,
+      radarRemainingSec,
+      radarDetectedCount,
+      recentPickupName: this.recentPickupName,
+      recentPickupColor: this.recentPickupColor,
       isPaused: this.paused,
       isPreparing,
       prepLabel,

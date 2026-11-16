@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { MINE_SYSTEM_CONFIG } from '../../data/powerups';
 import { EffectsPool } from '../systems/EffectsPool';
 import { soundFX } from '../systems/SoundFX';
 import { ObstacleEntity } from '../entities/ObstacleEntity';
@@ -15,6 +16,8 @@ export interface ProjectileSpawnOptions {
   radius: number;
   pierceCount: number;
   appliesSlow: boolean;
+  slowFactor: number;
+  slowDurationSec: number;
   textureKey: string;
 }
 
@@ -31,16 +34,23 @@ interface PooledProjectile {
   radius: number;
   pierceLeft: number;
   appliesSlow: boolean;
+  slowFactor: number;
+  slowDurationSec: number;
   hitEntityIds: Set<string>;
+  trailTimer: number;
+  trailColor: number;
 }
 
 interface ProximityMine {
   sprite: Phaser.GameObjects.Image;
+  indicatorRing: Phaser.GameObjects.Arc;
   ownerId: string;
   x: number;
   y: number;
   armTimer: number;
   life: number;
+  damage: number;
+  pulseClock: number;
   active: boolean;
 }
 
@@ -79,6 +89,7 @@ interface PooledBarrageShell {
   aoeRadius: number;
   damage: number;
   hitEntityIds: Set<string>;
+  trailTimer: number;
 }
 
 export class ProjectilePool {
@@ -86,6 +97,7 @@ export class ProjectilePool {
   private pool: PooledProjectile[] = [];
   private mines: ProximityMine[] = [];
   private barrageShells: PooledBarrageShell[] = [];
+  private tankLookup = new Map<string, TankEntity>();
 
   constructor(scene: Phaser.Scene, poolSize = 110) {
     this.scene = scene;
@@ -106,21 +118,33 @@ export class ProjectilePool {
         radius: 6,
         pierceLeft: 0,
         appliesSlow: false,
+        slowFactor: 1,
+        slowDurationSec: 0,
         hitEntityIds: new Set(),
+        trailTimer: 0,
+        trailColor: 0xfde68a,
       });
     }
 
     for (let i = 0; i < 16; i++) {
+      const indicatorRing = scene.add
+        .circle(-200, -200, 22, 0xf97316, 0.12)
+        .setStrokeStyle(2, 0xf97316, 0.8)
+        .setDepth(7)
+        .setVisible(false);
       const sprite = scene.add.image(-200, -200, 'entity_mine');
       sprite.setDepth(8);
       sprite.setVisible(false);
       this.mines.push({
         sprite,
+        indicatorRing,
         ownerId: '',
         x: 0,
         y: 0,
-        armTimer: 0.8,
-        life: 25,
+        armTimer: MINE_SYSTEM_CONFIG.armDelaySec,
+        life: MINE_SYSTEM_CONFIG.durationSec,
+        damage: MINE_SYSTEM_CONFIG.damage,
+        pulseClock: 0,
         active: false,
       });
     }
@@ -164,6 +188,7 @@ export class ProjectilePool {
         aoeRadius: 88,
         damage: 28,
         hitEntityIds: new Set(),
+        trailTimer: 0,
       });
     }
   }
@@ -182,7 +207,18 @@ export class ProjectilePool {
         p.radius = opts.radius;
         p.pierceLeft = opts.pierceCount;
         p.appliesSlow = opts.appliesSlow;
+        p.slowFactor = opts.slowFactor;
+        p.slowDurationSec = opts.slowDurationSec;
         p.hitEntityIds.clear();
+        p.trailTimer = 0.025;
+        p.trailColor =
+          opts.textureKey === 'proj_electric'
+            ? 0x22d3ee
+            : opts.textureKey === 'proj_artillery' || opts.textureKey === 'proj_heavy'
+            ? 0xf97316
+            : opts.textureKey === 'proj_pierce'
+            ? 0xc084fc
+            : 0xfde68a;
 
         p.sprite.setTexture(opts.textureKey);
         p.sprite.setPosition(opts.x, opts.y);
@@ -193,18 +229,69 @@ export class ProjectilePool {
     }
   }
 
-  spawnMine(ownerId: string, x: number, y: number): void {
+  spawnMine(
+    ownerId: string,
+    x: number,
+    y: number,
+    durationSec = MINE_SYSTEM_CONFIG.durationSec,
+    armDelaySec = MINE_SYSTEM_CONFIG.armDelaySec,
+    damage = MINE_SYSTEM_CONFIG.damage
+  ): boolean {
+    if (
+      this.getActiveMineCount(ownerId) >= MINE_SYSTEM_CONFIG.maxActivePerTank ||
+      this.getActiveMineCount() >= MINE_SYSTEM_CONFIG.maxActiveGlobal
+    ) {
+      return false;
+    }
+
     for (const m of this.mines) {
       if (!m.active) {
         m.active = true;
         m.ownerId = ownerId;
         m.x = x;
         m.y = y;
-        m.armTimer = 0.75;
-        m.life = 28;
+        m.armTimer = armDelaySec;
+        m.life = durationSec;
+        m.damage = damage;
+        m.pulseClock = 0;
         m.sprite.setPosition(x, y).setAlpha(0.65).setVisible(true);
-        return;
+        m.indicatorRing
+          .setPosition(x, y)
+          .setStrokeStyle(2, 0xfacc15, 0.65)
+          .setFillStyle(0xfacc15, 0.1)
+          .setVisible(true);
+        return true;
       }
+    }
+    return false;
+  }
+
+  getActiveMineCount(ownerId?: string): number {
+    let count = 0;
+    for (const m of this.mines) {
+      if (m.active && (!ownerId || m.ownerId === ownerId)) count += 1;
+    }
+    return count;
+  }
+
+  clearAll(): void {
+    for (const p of this.pool) {
+      p.active = false;
+      p.sprite.setVisible(false);
+    }
+    for (const m of this.mines) {
+      m.active = false;
+      m.sprite.setVisible(false);
+      m.indicatorRing.setVisible(false);
+    }
+    for (const b of this.barrageShells) {
+      b.active = false;
+      b.launched = false;
+      b.impacted = false;
+      b.warningOuter.setVisible(false);
+      b.warningInner.setVisible(false);
+      b.shadow.setVisible(false);
+      b.shellSprite.setVisible(false);
     }
   }
 
@@ -251,6 +338,7 @@ export class ProjectilePool {
       slot.aoeRadius = opts.aoeRadius;
       slot.damage = opts.damage;
       slot.hitEntityIds.clear();
+      slot.trailTimer = 0.04;
 
       slot.warningOuter.setVisible(false);
       slot.warningInner.setVisible(false);
@@ -271,35 +359,51 @@ export class ProjectilePool {
     onBarrelExplode: (x: number, y: number, attackerId: string) => void,
     onTankEliminated: (victim: TankEntity, attackerId: string) => void
   ): void {
-    const tankMap = new Map<string, TankEntity>();
+    this.tankLookup.clear();
+    const tankMap = this.tankLookup;
     for (const t of tanks) tankMap.set(t.id, t);
 
-    // 1. Update mines
+    // 1. Update mines (clear visual indicators, expiration, single-hit safety)
     for (const m of this.mines) {
       if (!m.active) continue;
       m.life -= dt;
+      m.pulseClock += dt;
       if (m.life <= 0) {
         m.active = false;
         m.sprite.setVisible(false);
+        m.indicatorRing.setVisible(false);
         continue;
       }
       if (m.armTimer > 0) {
         m.armTimer -= dt;
-        if (m.armTimer <= 0) m.sprite.setAlpha(1);
+        if (m.armTimer <= 0) {
+          m.sprite.setAlpha(1);
+          m.indicatorRing.setStrokeStyle(2, 0xf97316, 0.85).setFillStyle(0xf97316, 0.14);
+        }
         continue;
       }
 
+      const blinkWarn = m.life < 4 ? (Math.sin(m.pulseClock * 18) > 0 ? 1 : 0.3) : 1;
+      const pulseAlpha = (0.45 + 0.4 * Math.abs(Math.sin(m.pulseClock * 6))) * blinkWarn;
+      m.sprite.setAlpha(blinkWarn);
+      m.indicatorRing.setAlpha(pulseAlpha);
+
       for (const t of tanks) {
         if (!t.alive || t.id === m.ownerId) continue;
-        if (Math.hypot(t.x - m.x, t.y - m.y) <= t.radius + 16) {
+        if (Math.hypot(t.x - m.x, t.y - m.y) <= t.radius + MINE_SYSTEM_CONFIG.triggerPadding) {
+          // Deactivate immediately BEFORE dealing damage so a mine never deals repeated hits
           m.active = false;
           m.sprite.setVisible(false);
+          m.indicatorRing.setVisible(false);
           effects.spawnDestruction(m.x, m.y, 0xf97316, 85);
           soundFX.playExplosion();
 
-          const res = t.takeDamage(45);
+          const res = t.takeDamage(m.damage, 'explosion');
           const attacker = tankMap.get(m.ownerId);
           if (attacker) attacker.damageDealt += res.actualDamage;
+          if ((t.isPlayer || attacker?.isPlayer) && res.actualDamage > 0) {
+            effects.spawnDamageNumber(t.x, t.y, res.actualDamage, 'explosion');
+          }
           if (res.killed) onTankEliminated(t, m.ownerId);
           break;
         }
@@ -325,16 +429,17 @@ export class ProjectilePool {
         p.y += subDy;
         p.distanceLeft -= subDist;
 
-        if (
-          p.distanceLeft <= 0 ||
-          p.x < 10 ||
-          p.x > arenaWidth - 10 ||
-          p.y < 10 ||
-          p.y > arenaHeight - 10
-        ) {
+        const outOfBounds =
+          p.x < 10 || p.x > arenaWidth - 10 || p.y < 10 || p.y > arenaHeight - 10;
+        if (p.distanceLeft <= 0 || outOfBounds) {
           p.active = false;
           p.sprite.setVisible(false);
-          effects.spawnImpact(p.x, p.y, 0xd6d3d1);
+          if (outOfBounds) {
+            effects.spawnImpact(p.x, p.y, 0x94a3b8);
+            effects.spawnRing(p.x, p.y, 16, 0x94a3b8, 0.14);
+          } else {
+            effects.spawnTrailPuff(p.x, p.y, 0xe5e7eb, 0.25);
+          }
           break;
         }
 
@@ -347,8 +452,10 @@ export class ProjectilePool {
 
           if (obs.containsPoint(p.x, p.y, p.radius)) {
             p.hitEntityIds.add(obsKey);
+            const obsKind =
+              obs.type === 'crate' ? 'crate' : obs.type === 'brick' ? 'brick' : 'steel';
             if (obs.destructible) {
-              const destroyed = obs.damage(p.damage, this.scene);
+              const destroyed = obs.damage(p.damage, this.scene, p.ownerId);
               if (destroyed) {
                 if (obs.type === 'barrel') {
                   onBarrelExplode(obs.x, obs.y, p.ownerId);
@@ -359,11 +466,15 @@ export class ProjectilePool {
                     obs.type === 'brick' ? 0xb45309 : 0xd97706,
                     48
                   );
-                  soundFX.playImpact(true);
+                  effects.spawnObstacleDebris(obs.x, obs.y, obsKind);
+                  soundFX.playImpact('destructible');
                 }
               } else {
-                effects.spawnImpact(p.x, p.y, 0xf59e0b);
-                soundFX.playImpact(false);
+                effects.spawnObstacleDebris(p.x, p.y, obsKind);
+                if (obs.isPriming) {
+                  effects.spawnImpact(p.x, p.y, 0xfacc15);
+                }
+                soundFX.playImpact('destructible');
               }
 
               if (p.pierceLeft > 0) {
@@ -373,8 +484,8 @@ export class ProjectilePool {
               }
             } else {
               // Indestructible steel stops all projectiles
-              effects.spawnImpact(p.x, p.y, 0x94a3b8);
-              soundFX.playImpact(false);
+              effects.spawnObstacleDebris(p.x, p.y, 'steel');
+              soundFX.playImpact('steel');
               consumed = true;
             }
             break;
@@ -402,18 +513,33 @@ export class ProjectilePool {
             }
 
             if (p.appliesSlow) {
-              tank.applySlow(0.75, 1.5);
+              tank.applySlow(p.slowFactor, p.slowDurationSec, 'static');
             }
 
             if (res.shieldAbsorbed > 0) {
               effects.spawnImpact(p.x, p.y, 0x38bdf8);
+              soundFX.playImpact('shield');
               if (res.shieldBroken) {
                 effects.spawnRing(tank.x, tank.y, tank.radius + 22, 0x38bdf8, 0.28);
+                soundFX.playShieldBreak();
               }
+            } else if (p.appliesSlow) {
+              effects.spawnElectricImpact(p.x, p.y);
+              soundFX.playImpact('tank');
             } else {
-              effects.spawnImpact(p.x, p.y, p.appliesSlow ? 0x22d3ee : 0xef4444);
+              effects.spawnImpact(p.x, p.y, 0xef4444);
+              soundFX.playImpact('tank');
             }
-            soundFX.playImpact(true);
+
+            if ((tank.isPlayer || attacker?.isPlayer) && res.actualDamage > 0) {
+              const kind =
+                res.shieldAbsorbed > 0 && res.actualDamage === res.shieldAbsorbed
+                  ? 'shield'
+                  : p.appliesSlow
+                  ? 'electric'
+                  : 'normal';
+              effects.spawnDamageNumber(tank.x, tank.y, res.actualDamage, kind);
+            }
 
             if (res.killed) {
               onTankEliminated(tank, p.ownerId);
@@ -432,6 +558,11 @@ export class ProjectilePool {
 
       if (p.active) {
         p.sprite.setPosition(p.x, p.y);
+        p.trailTimer -= dt;
+        if (p.trailTimer <= 0) {
+          p.trailTimer = p.trailColor === 0x22d3ee ? 0.04 : 0.052;
+          effects.spawnTrailPuff(p.x, p.y, p.trailColor, p.radius >= 8 ? 0.28 : 0.2);
+        }
       }
     }
 
@@ -476,6 +607,11 @@ export class ProjectilePool {
         b.shellSprite
           .setPosition(sx, sy - arcLift)
           .setScale(0.95 + Math.sin(progress * Math.PI) * 0.45);
+        b.trailTimer -= dt;
+        if (b.trailTimer <= 0) {
+          b.trailTimer = 0.06;
+          effects.spawnTrailPuff(sx, sy - arcLift, 0xf97316, 0.26);
+        }
         continue;
       }
 
@@ -501,8 +637,11 @@ export class ProjectilePool {
           b.hitEntityIds.add(tank.id);
           const falloff = 1 - 0.35 * Math.min(1, dist / Math.max(1, hitThreshold));
           const dmg = Math.round(b.damage * falloff);
-          const res = tank.takeDamage(dmg);
+          const res = tank.takeDamage(dmg, 'explosion');
           if (attacker) attacker.damageDealt += res.actualDamage;
+          if ((tank.isPlayer || attacker?.isPlayer) && res.actualDamage > 0) {
+            effects.spawnDamageNumber(tank.x, tank.y, res.actualDamage, 'explosion');
+          }
           if (res.killed) onTankEliminated(tank, b.ownerId);
         }
       }
@@ -514,7 +653,7 @@ export class ProjectilePool {
 
         if (Math.hypot(obs.x - b.impactX, obs.y - b.impactY) <= b.aoeRadius * 0.85) {
           b.hitEntityIds.add(obsKey);
-          const destroyed = obs.damage(Math.round(b.damage * 0.85), this.scene);
+          const destroyed = obs.damage(Math.round(b.damage * 0.85), this.scene, b.ownerId);
           if (destroyed) {
             if (obs.type === 'barrel') {
               onBarrelExplode(obs.x, obs.y, b.ownerId);
@@ -525,6 +664,7 @@ export class ProjectilePool {
                 obs.type === 'brick' ? 0xb45309 : 0xd97706,
                 48
               );
+              effects.spawnObstacleDebris(obs.x, obs.y, obs.type === 'brick' ? 'brick' : 'crate');
             }
           }
         }

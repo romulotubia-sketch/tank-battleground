@@ -34,11 +34,15 @@ export function ResultsScreen({
 
   return (
     <div className="fixed inset-0 z-30 w-full h-full overflow-y-auto bg-[#141714]/78 backdrop-blur-xs text-[#F3EFE6] flex items-center justify-center p-3 sm:p-4">
-      <div className="w-full max-w-lg bg-[#1E221D] border-2 border-[#F3EFE6]/25 rounded-2xl p-4 sm:p-7 shadow-2xl">
+      <div
+        className={`w-full max-w-lg bg-[#1E221D] border-2 rounded-2xl p-4 sm:p-7 shadow-2xl ${
+          result.victory ? 'border-[#E08E26]/65' : 'border-[#F3EFE6]/25'
+        }`}
+      >
         {/* Outcome Header */}
         <div className="flex flex-col items-center text-center">
           <div
-            className={`w-11 h-11 sm:w-14 sm:h-14 rounded-full flex items-center justify-center border-2 mb-2 sm:mb-3 ${
+            className={`w-12 h-12 sm:w-14 sm:h-14 rounded-full flex items-center justify-center border-2 mb-2 sm:mb-3 ${
               result.victory
                 ? 'bg-[#E08E26]/20 border-[#E08E26] text-[#E08E26]'
                 : 'bg-red-500/15 border-red-400/60 text-red-400'
@@ -47,14 +51,18 @@ export function ResultsScreen({
             {result.victory ? <Trophy className="w-6 h-6 sm:w-7 sm:h-7" /> : <Skull className="w-6 h-6 sm:w-7 sm:h-7" />}
           </div>
 
-          <h1 className="font-display text-3xl sm:text-5xl font-extrabold tracking-wide">
+          <h1
+            className={`font-display text-3xl sm:text-5xl font-extrabold tracking-wide ${
+              result.victory ? 'text-[#E08E26]' : 'text-[#F3EFE6]'
+            }`}
+          >
             {result.victory ? 'Victory' : 'Defeat'}
           </h1>
-          <p className="text-xs sm:text-sm text-[#F3EFE6]/70 mt-1">
+          <p className="text-xs sm:text-sm text-[#F3EFE6]/75 mt-1">
             {getReasonLabel(result)}
           </p>
-          <p className="text-xs text-[#F3EFE6]/50 mt-0.5">
-            {tank.name} · {arena.name}
+          <p className="text-xs text-[#F3EFE6]/55 mt-1 font-mono tabular-nums">
+            {tank.name} · {arena.name} · Rank #{result.placement} of {result.totalTanks}
           </p>
         </div>
 
