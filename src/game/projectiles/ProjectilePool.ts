@@ -37,6 +37,7 @@ interface PooledProjectile {
   slowFactor: number;
   slowDurationSec: number;
   hitEntityIds: Set<string>;
+  hitObstacleIds: Set<number>;
   trailTimer: number;
   trailColor: number;
 }
@@ -89,6 +90,7 @@ interface PooledBarrageShell {
   aoeRadius: number;
   damage: number;
   hitEntityIds: Set<string>;
+  hitObstacleIds: Set<number>;
   trailTimer: number;
 }
 
@@ -121,6 +123,7 @@ export class ProjectilePool {
         slowFactor: 1,
         slowDurationSec: 0,
         hitEntityIds: new Set(),
+        hitObstacleIds: new Set(),
         trailTimer: 0,
         trailColor: 0xfde68a,
       });
@@ -188,6 +191,7 @@ export class ProjectilePool {
         aoeRadius: 88,
         damage: 28,
         hitEntityIds: new Set(),
+        hitObstacleIds: new Set(),
         trailTimer: 0,
       });
     }
@@ -210,6 +214,7 @@ export class ProjectilePool {
         p.slowFactor = opts.slowFactor;
         p.slowDurationSec = opts.slowDurationSec;
         p.hitEntityIds.clear();
+        p.hitObstacleIds.clear();
         p.trailTimer = 0.025;
         p.trailColor =
           opts.textureKey === 'proj_electric'
@@ -262,6 +267,19 @@ export class ProjectilePool {
           .setVisible(true);
         return true;
       }
+    }
+    return false;
+  }
+
+  canSpawnMine(ownerId: string): boolean {
+    if (
+      this.getActiveMineCount(ownerId) >= MINE_SYSTEM_CONFIG.maxActivePerTank ||
+      this.getActiveMineCount() >= MINE_SYSTEM_CONFIG.maxActiveGlobal
+    ) {
+      return false;
+    }
+    for (const m of this.mines) {
+      if (!m.active) return true;
     }
     return false;
   }
@@ -338,6 +356,7 @@ export class ProjectilePool {
       slot.aoeRadius = opts.aoeRadius;
       slot.damage = opts.damage;
       slot.hitEntityIds.clear();
+      slot.hitObstacleIds.clear();
       slot.trailTimer = 0.04;
 
       slot.warningOuter.setVisible(false);
@@ -357,7 +376,8 @@ export class ProjectilePool {
     arenaHeight: number,
     effects: EffectsPool,
     onBarrelExplode: (x: number, y: number, attackerId: string) => void,
-    onTankEliminated: (victim: TankEntity, attackerId: string) => void
+    onTankEliminated: (victim: TankEntity, attackerId: string) => void,
+    onObstacleDestroyed?: (obs: ObstacleEntity, attackerId: string) => void
   ): void {
     this.tankLookup.clear();
     const tankMap = this.tankLookup;
@@ -390,7 +410,10 @@ export class ProjectilePool {
 
       for (const t of tanks) {
         if (!t.alive || t.id === m.ownerId) continue;
-        if (Math.hypot(t.x - m.x, t.y - m.y) <= t.radius + MINE_SYSTEM_CONFIG.triggerPadding) {
+        const mdx = t.x - m.x;
+        const mdy = t.y - m.y;
+        const trigR = t.radius + MINE_SYSTEM_CONFIG.triggerPadding;
+        if (mdx * mdx + mdy * mdy <= trigR * trigR) {
           // Deactivate immediately BEFORE dealing damage so a mine never deals repeated hits
           m.active = false;
           m.sprite.setVisible(false);
@@ -447,11 +470,10 @@ export class ProjectilePool {
         let consumed = false;
         for (const obs of obstacles) {
           if (!obs.alive || !obs.blocksProjectiles) continue;
-          const obsKey = `obs_${obs.id}`;
-          if (p.hitEntityIds.has(obsKey)) continue;
+          if (p.hitObstacleIds.has(obs.id)) continue;
 
           if (obs.containsPoint(p.x, p.y, p.radius)) {
-            p.hitEntityIds.add(obsKey);
+            p.hitObstacleIds.add(obs.id);
             const obsKind =
               obs.type === 'crate' ? 'crate' : obs.type === 'brick' ? 'brick' : 'steel';
             if (obs.destructible) {
@@ -468,6 +490,7 @@ export class ProjectilePool {
                   );
                   effects.spawnObstacleDebris(obs.x, obs.y, obsKind);
                   soundFX.playImpact('destructible');
+                  onObstacleDestroyed?.(obs, p.ownerId);
                 }
               } else {
                 effects.spawnObstacleDebris(p.x, p.y, obsKind);
@@ -503,8 +526,10 @@ export class ProjectilePool {
           if (!tank.alive || tank.id === p.ownerId) continue;
           if (p.hitEntityIds.has(tank.id)) continue;
 
-          const dist = Math.hypot(tank.x - p.x, tank.y - p.y);
-          if (dist <= tank.radius + p.radius) {
+          const tdx = tank.x - p.x;
+          const tdy = tank.y - p.y;
+          const hitR = tank.radius + p.radius;
+          if (tdx * tdx + tdy * tdy <= hitR * hitR) {
             p.hitEntityIds.add(tank.id);
             const res = tank.takeDamage(p.damage);
             const attacker = tankMap.get(p.ownerId);
@@ -646,13 +671,15 @@ export class ProjectilePool {
         }
       }
 
+      const obsHitRangeSq = (b.aoeRadius * 0.85) * (b.aoeRadius * 0.85);
       for (const obs of obstacles) {
         if (!obs.alive || !obs.destructible) continue;
-        const obsKey = `obs_${obs.id}`;
-        if (b.hitEntityIds.has(obsKey)) continue;
+        if (b.hitObstacleIds.has(obs.id)) continue;
 
-        if (Math.hypot(obs.x - b.impactX, obs.y - b.impactY) <= b.aoeRadius * 0.85) {
-          b.hitEntityIds.add(obsKey);
+        const odx = obs.x - b.impactX;
+        const ody = obs.y - b.impactY;
+        if (odx * odx + ody * ody <= obsHitRangeSq) {
+          b.hitObstacleIds.add(obs.id);
           const destroyed = obs.damage(Math.round(b.damage * 0.85), this.scene, b.ownerId);
           if (destroyed) {
             if (obs.type === 'barrel') {
@@ -665,6 +692,7 @@ export class ProjectilePool {
                 48
               );
               effects.spawnObstacleDebris(obs.x, obs.y, obs.type === 'brick' ? 'brick' : 'crate');
+              onObstacleDestroyed?.(obs, b.ownerId);
             }
           }
         }
@@ -681,9 +709,12 @@ export class ProjectilePool {
   }
 
   getActiveThreatNear(x: number, y: number, radius: number, ignoreOwnerId: string): { vx: number; vy: number } | null {
+    const radiusSq = radius * radius;
     for (const p of this.pool) {
       if (!p.active || p.ownerId === ignoreOwnerId) continue;
-      if (Math.hypot(p.x - x, p.y - y) < radius) {
+      const dx = p.x - x;
+      const dy = p.y - y;
+      if (dx * dx + dy * dy < radiusSq) {
         return { vx: p.vx, vy: p.vy };
       }
     }
@@ -691,7 +722,8 @@ export class ProjectilePool {
       if (!b.active || !b.launched || b.impacted) continue;
       const dx = b.impactX - x;
       const dy = b.impactY - y;
-      if (Math.hypot(dx, dy) <= b.aoeRadius + 30) {
+      const r = b.aoeRadius + 30;
+      if (dx * dx + dy * dy <= r * r) {
         // Return pseudo-velocity vector pointing toward impact center so AI dodges perpendicularly/away
         return { vx: dx || 1, vy: dy || 0 };
       }

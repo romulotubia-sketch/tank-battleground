@@ -19,6 +19,8 @@ class SoundFXManager {
   private soundVolume = 0.65;
   private musicEnabled = true;
   private musicVolume = 0.4;
+  private platformMuted = false;
+  private adPaused = false;
 
   private unlocked = false;
   private gestureHooked = false;
@@ -52,6 +54,25 @@ class SoundFXManager {
     window.addEventListener('pointerdown', onGesture, { passive: true });
     window.addEventListener('keydown', onGesture, { passive: true });
     window.addEventListener('touchstart', onGesture, { passive: true });
+
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+          this.stopAllLoops();
+          if (this.ctx && this.ctx.state === 'running') {
+            this.ctx.suspend().catch(() => {});
+          }
+        } else if (document.visibilityState === 'visible') {
+          if (this.unlocked && this.ctx && this.ctx.state === 'suspended') {
+            this.ctx.resume().catch(() => {});
+          }
+          this.syncMusicLoop();
+        }
+      });
+    }
+    window.addEventListener('pagehide', () => {
+      this.stopAllLoops();
+    });
   }
 
   unlockFromUserGesture(): void {
@@ -77,23 +98,76 @@ class SoundFXManager {
 
     if (this.ctx && this.sfxGain) {
       this.sfxGain.gain.setTargetAtTime(
-        this.soundEnabled ? this.soundVolume : 0,
+        this.isEffectivelySfxMuted() ? 0 : this.soundVolume,
         this.ctx.currentTime,
         0.02
       );
     }
     if (this.ctx && this.musicGain) {
       this.musicGain.gain.setTargetAtTime(
-        this.musicEnabled ? this.musicVolume * 0.24 : 0,
+        this.isEffectivelyMusicMuted() ? 0 : this.musicVolume * 0.24,
         this.ctx.currentTime,
         0.04
       );
     }
 
-    if (!this.soundEnabled || this.soundVolume <= 0.01) {
+    if (this.isEffectivelySfxMuted()) {
       this.stopEngineLoop();
     }
     this.syncMusicLoop();
+  }
+
+  private isEffectivelySfxMuted(): boolean {
+    return !this.soundEnabled || this.soundVolume <= 0.01 || this.platformMuted || this.adPaused;
+  }
+
+  private isEffectivelyMusicMuted(): boolean {
+    return !this.musicEnabled || this.musicVolume <= 0.01 || this.platformMuted || this.adPaused;
+  }
+
+  setPlatformMuted(muted: boolean): void {
+    if (this.platformMuted === muted) return;
+    this.platformMuted = muted;
+    this.applyEffectiveAudioState();
+  }
+
+  setAdPaused(paused: boolean): void {
+    if (this.adPaused === paused) return;
+    this.adPaused = paused;
+    this.applyEffectiveAudioState();
+  }
+
+  private applyEffectiveAudioState(): void {
+    if (this.ctx && this.sfxGain) {
+      this.sfxGain.gain.setTargetAtTime(
+        this.isEffectivelySfxMuted() ? 0 : this.soundVolume,
+        this.ctx.currentTime,
+        0.02
+      );
+    }
+    if (this.ctx && this.musicGain) {
+      this.musicGain.gain.setTargetAtTime(
+        this.isEffectivelyMusicMuted() ? 0 : this.musicVolume * 0.24,
+        this.ctx.currentTime,
+        0.03
+      );
+    }
+    if (this.platformMuted || this.adPaused) {
+      this.stopAllLoops();
+      if (this.ctx && this.ctx.state === 'running') {
+        this.ctx.suspend().catch(() => {});
+      }
+    } else {
+      const isVisible =
+        typeof document === 'undefined' || document.visibilityState !== 'hidden';
+      if (isVisible && this.unlocked && this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      if (this.isEffectivelySfxMuted()) {
+        this.stopEngineLoop();
+      }
+      this.syncMusicLoop();
+    }
   }
 
   setMusicMode(mode: MusicMode): void {
@@ -134,7 +208,7 @@ class SoundFXManager {
   }
 
   private canPlaySfx(tag: string, minIntervalMs = 45): AudioContext | null {
-    if (!this.soundEnabled || this.soundVolume <= 0.01) return null;
+    if (this.isEffectivelySfxMuted()) return null;
     if (this.activeVoices >= this.maxVoices) return null;
     const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const prev = this.lastPlayedAt.get(tag) ?? 0;
@@ -195,7 +269,7 @@ class SoundFXManager {
   // --- Tank Movement Audio ---
   updateMovementAudio(speedRatio: number, active: boolean): void {
     const clamped = active ? Math.min(1.4, Math.max(0, speedRatio)) : 0;
-    if (!this.soundEnabled || this.soundVolume <= 0.01 || clamped < 0.08) {
+    if (this.isEffectivelySfxMuted() || clamped < 0.08) {
       if (this.ctx && this.engineGain) {
         this.engineGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.06);
       }
@@ -267,11 +341,13 @@ class SoundFXManager {
 
   // --- Original Procedural Music Loop ---
   private syncMusicLoop(): void {
+    const isHidden =
+      typeof document !== 'undefined' && document.visibilityState === 'hidden';
     const shouldPlay =
+      !isHidden &&
       this.unlocked &&
       this.musicMode !== 'none' &&
-      this.musicEnabled &&
-      this.musicVolume > 0.01;
+      !this.isEffectivelyMusicMuted();
 
     if (!shouldPlay) {
       this.stopMusicTimer();
@@ -297,7 +373,7 @@ class SoundFXManager {
   }
 
   private tickMusicNote(): void {
-    if (!this.musicEnabled || this.musicVolume <= 0.01 || this.musicMode === 'none') return;
+    if (this.isEffectivelyMusicMuted() || this.musicMode === 'none') return;
     const ctx = this.ensureContext(false);
     if (!ctx || ctx.state !== 'running' || !this.musicGain) return;
 

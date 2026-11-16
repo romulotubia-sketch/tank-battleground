@@ -101,11 +101,11 @@ export function SettingsScreen({
             </button>
           </div>
 
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <label htmlFor="sfx-volume-slider" className="text-sm font-medium text-[#F3EFE6]/85">
               Sound Effects Volume
             </label>
-            <div className="flex items-center gap-3 w-48 sm:w-64">
+            <div className="flex items-center gap-3 w-full sm:w-64">
               <input
                 id="sfx-volume-slider"
                 type="range"
@@ -149,11 +149,11 @@ export function SettingsScreen({
             </button>
           </div>
 
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <label htmlFor="music-volume-slider" className="text-sm font-medium text-[#F3EFE6]/85">
               Music Volume
             </label>
-            <div className="flex items-center gap-3 w-48 sm:w-64">
+            <div className="flex items-center gap-3 w-full sm:w-64">
               <input
                 id="music-volume-slider"
                 type="range"
@@ -273,7 +273,7 @@ export function SettingsScreen({
         <section className="bg-[#1B1F1A]/95 border border-[#F3EFE6]/15 rounded-2xl p-4 sm:p-5 flex flex-col gap-4">
           <h2 className="font-display text-xl font-bold">Controls &amp; Match</h2>
 
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <label htmlFor="sensitivity-slider" className="text-sm font-semibold block">
                 Control Sensitivity
@@ -282,7 +282,7 @@ export function SettingsScreen({
                 Scales virtual joystick response and turret tracking speed
               </div>
             </div>
-            <div className="flex items-center gap-3 w-48 sm:w-64">
+            <div className="flex items-center gap-3 w-full sm:w-64">
               <input
                 id="sensitivity-slider"
                 type="range"

@@ -33,6 +33,8 @@ export class ObstacleEntity {
   private waterShimmer: Phaser.GameObjects.Rectangle | null = null;
   private damageStage = 0;
   private fuseSparkTimer = 0;
+  private hitFlashTimer = 0;
+  private lastFuseFlash: boolean | null = null;
 
   constructor(scene: Phaser.Scene, id: number, placement: ObstaclePlacement) {
     this.id = id;
@@ -112,13 +114,9 @@ export class ObstacleEntity {
 
     this.hp = Math.max(0, this.hp - amount);
 
-    // Visual hit flash
+    // Visual hit flash (frame-updated without allocating Phaser timer objects per bullet hit)
     this.sprite.setTint(0xffdddd);
-    scene.time.delayedCall(65, () => {
-      if (this.alive && !this.isPriming && this.sprite.scene) {
-        this.sprite.clearTint();
-      }
-    });
+    this.hitFlashTimer = 0.065;
 
     if (this.hp <= 0) {
       if (this.type === 'barrel') {
@@ -176,6 +174,14 @@ export class ObstacleEntity {
     soundFX.playBarrelPrime();
   }
 
+  updateHitFlash(dt: number): void {
+    if (this.hitFlashTimer <= 0) return;
+    this.hitFlashTimer = Math.max(0, this.hitFlashTimer - dt);
+    if (this.hitFlashTimer === 0 && this.alive && !this.isPriming && this.sprite.scene) {
+      this.sprite.clearTint();
+    }
+  }
+
   updateAmbient(elapsedSec: number): void {
     if (!this.alive) return;
     if (this.type === 'water' && this.waterShimmer) {
@@ -215,7 +221,10 @@ export class ObstacleEntity {
     }
     if (this.sprite.scene) {
       const flash = Math.sin(this.fuseRemainingSec * 28) > 0;
-      this.sprite.setTint(flash ? 0xfef08a : 0xef4444);
+      if (flash !== this.lastFuseFlash) {
+        this.lastFuseFlash = flash;
+        this.sprite.setTint(flash ? 0xfef08a : 0xef4444);
+      }
       const s = 1 + 0.1 * progress;
       this.sprite.setDisplaySize(this.width * s, this.height * s);
     }

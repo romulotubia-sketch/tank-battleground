@@ -4,7 +4,7 @@ import {
   getEffectiveTankProjectileRange,
   getEffectiveTankReloadSec,
 } from '../../data/tanks';
-import { AIPersonality, PowerupId, TankDefinition } from '../../types/game';
+import { AIPersonality, CosmeticId, PowerupId, TankDefinition } from '../../types/game';
 import {
   ApplyPickupResult,
   DamageSource,
@@ -105,6 +105,12 @@ export class TankEntity {
   private hitFlashTint = 0xff9999;
   private damageTrailRatio = 1;
   private wasConcealed = false;
+  private lastHullTint: number | null = null;
+  private lastTurretTint: number | null = null;
+  private lastPlayerRingColor: number | null = null;
+  private lastAuraColor: number | null = null;
+  private lastSlowRingColor: number | null = null;
+  private lastSlowText = '';
 
   constructor(
     scene: Phaser.Scene,
@@ -115,7 +121,9 @@ export class TankEntity {
     x: number,
     y: number,
     angle: number,
-    personality: AIPersonality = 'tactical'
+    personality: AIPersonality = 'tactical',
+    cosmeticId: CosmeticId = 'default',
+    customTextureKeys?: { hullKey?: string; turretKey?: string }
   ) {
     this.id = id;
     this.displayName = displayName;
@@ -133,6 +141,7 @@ export class TankEntity {
 
     if (isPlayer) {
       this.playerRing = scene.add.circle(x, y, definition.stats.bodyRadius + 10, 0x22c55e, 0.14);
+      this.lastPlayerRingColor = 0x4ade80;
       this.playerRing.setStrokeStyle(2.5, 0x4ade80, 0.9);
       this.playerRing.setDepth(13);
 
@@ -161,18 +170,33 @@ export class TankEntity {
     this.phaseRing.setVisible(false);
 
     this.slowRing = scene.add.circle(x, y, definition.stats.bodyRadius + 11, 0x22d3ee, 0.16);
+    this.lastSlowRingColor = 0x22d3ee;
     this.slowRing.setStrokeStyle(2.8, 0x22d3ee, 0.95);
     this.slowRing.setDepth(16);
     this.slowRing.setVisible(false);
 
-    this.hullSprite = scene.add.image(x, y, `tank_hull_${definition.id}`);
+    const hullTexKey =
+      customTextureKeys?.hullKey && scene.textures.exists(customTextureKeys.hullKey)
+        ? customTextureKeys.hullKey
+        : cosmeticId !== 'default' && scene.textures.exists(`tank_hull_${definition.id}_${cosmeticId}`)
+        ? `tank_hull_${definition.id}_${cosmeticId}`
+        : `tank_hull_${definition.id}`;
+    const turretTexKey =
+      customTextureKeys?.turretKey && scene.textures.exists(customTextureKeys.turretKey)
+        ? customTextureKeys.turretKey
+        : cosmeticId !== 'default' && scene.textures.exists(`tank_turret_${definition.id}_${cosmeticId}`)
+        ? `tank_turret_${definition.id}_${cosmeticId}`
+        : `tank_turret_${definition.id}`;
+
+    this.hullSprite = scene.add.image(x, y, hullTexKey);
     this.hullSprite.setRotation(angle);
     this.hullSprite.setDepth(14);
     if (!isPlayer) {
       this.hullSprite.setTint(0xf2e8e4);
+      this.lastHullTint = 0xf2e8e4;
     }
 
-    this.turretSprite = scene.add.image(x, y, `tank_turret_${definition.id}`);
+    this.turretSprite = scene.add.image(x, y, turretTexKey);
     this.turretSprite.setOrigin(36 / 96, 0.5);
     this.turretSprite.setRotation(angle);
     this.turretSprite.setDepth(15);
@@ -183,6 +207,7 @@ export class TankEntity {
     this.shieldRing.setVisible(false);
 
     this.powerupAuraRing = scene.add.circle(x, y, definition.stats.bodyRadius + 15, 0xf59e0b, 0.08);
+    this.lastAuraColor = 0xf59e0b;
     this.powerupAuraRing.setStrokeStyle(2.2, 0xf59e0b, 0.85);
     this.powerupAuraRing.setDepth(12);
     this.powerupAuraRing.setVisible(false);
@@ -678,37 +703,45 @@ export class TankEntity {
       .setRotation(this.turretAngle)
       .setScale(hitScale);
 
-    // Hit flash & Rapid Fire barrel glow tinting (zero timer allocations)
-    if (this.hitFlashTimer > 0) {
-      this.hullSprite.setTint(this.hitFlashTint);
-      this.turretSprite.setTint(this.hitFlashTint);
-    } else {
-      if (this.isPlayer) this.hullSprite.clearTint();
-      else this.hullSprite.setTint(0xf2e8e4);
+    // Hit flash & Rapid Fire barrel glow tinting (dirty-checked; zero redundant WebGL/Canvas updates)
+    const desiredHullTint =
+      this.hitFlashTimer > 0 ? this.hitFlashTint : this.isPlayer ? null : 0xf2e8e4;
+    if (desiredHullTint !== this.lastHullTint) {
+      this.lastHullTint = desiredHullTint;
+      if (desiredHullTint === null) this.hullSprite.clearTint();
+      else this.hullSprite.setTint(desiredHullTint);
+    }
 
-      if (this.definition.id === 'assault' && this.abilityActiveTimer > 0) {
-        this.turretSprite.setTint(0xfde68a);
-      } else {
-        this.turretSprite.clearTint();
-      }
+    const desiredTurretTint =
+      this.hitFlashTimer > 0
+        ? this.hitFlashTint
+        : this.definition.id === 'assault' && this.abilityActiveTimer > 0
+        ? 0xfde68a
+        : null;
+    if (desiredTurretTint !== this.lastTurretTint) {
+      this.lastTurretTint = desiredTurretTint;
+      if (desiredTurretTint === null) this.turretSprite.clearTint();
+      else this.turretSprite.setTint(desiredTurretTint);
     }
 
     if (this.playerRing) {
       this.playerRing.setVisible(true).setPosition(this.x, this.y);
-      if (this.spawnProtectionTimer > 0) {
-        this.playerRing.setStrokeStyle(2.5, 0xfacc15, 0.9);
-      } else {
-        this.playerRing.setStrokeStyle(2.5, 0x4ade80, 0.9);
+      const ringColor = this.spawnProtectionTimer > 0 ? 0xfacc15 : 0x4ade80;
+      if (ringColor !== this.lastPlayerRingColor) {
+        this.lastPlayerRingColor = ringColor;
+        this.playerRing.setStrokeStyle(2.5, ringColor, 0.9);
       }
     }
 
     // Concealment, Phase, Radar reveal & Spawn Protection visibility
+    const rdx = this.x - playerX;
+    const rdy = this.y - playerY;
     const radarRevealed =
       !this.isPlayer &&
       !prepPhase &&
       playerHasRadar &&
       playerRadarRadius > 0 &&
-      Math.hypot(this.x - playerX, this.y - playerY) <= playerRadarRadius;
+      rdx * rdx + rdy * rdy <= playerRadarRadius * playerRadarRadius;
     const hiddenFromPlayer =
       !this.isPlayer && !radarRevealed && (this.concealed || this.phaseCloaked);
     const spawnPulse =
@@ -845,10 +878,13 @@ export class TankEntity {
 
     if (auraColor !== null && !hiddenFromPlayer) {
       const auraPulse = 0.55 + 0.35 * Math.abs(Math.sin(this.visualClock * 8));
+      if (auraColor !== this.lastAuraColor) {
+        this.lastAuraColor = auraColor;
+        this.powerupAuraRing.setStrokeStyle(2.2, auraColor, 0.9).setFillStyle(auraColor, 0.08);
+      }
       this.powerupAuraRing
         .setPosition(this.x, this.y)
-        .setStrokeStyle(2.2, auraColor, auraPulse)
-        .setFillStyle(auraColor, 0.08)
+        .setAlpha(auraPulse)
         .setVisible(true);
     } else {
       this.powerupAuraRing.setVisible(false);
@@ -885,9 +921,12 @@ export class TankEntity {
     if (this.isSlowed && !hiddenFromPlayer) {
       const slowPulse = 0.55 + 0.4 * Math.abs(Math.sin(this.slowRemainingSec * 16));
       const ringColor = this.isEmpDisrupted ? 0x38bdf8 : 0x22d3ee;
+      if (ringColor !== this.lastSlowRingColor) {
+        this.lastSlowRingColor = ringColor;
+        this.slowRing.setStrokeStyle(2.8, ringColor, 0.95);
+      }
       this.slowRing
         .setPosition(this.x, this.y)
-        .setStrokeStyle(2.8, ringColor, slowPulse)
         .setAlpha(slowPulse)
         .setVisible(true);
     } else {
@@ -896,10 +935,12 @@ export class TankEntity {
 
     this.nameLabel.setPosition(this.x, this.y - 46).setVisible(showHudBar);
     if (this.isSlowed && showHudBar) {
-      this.slowLabel
-        .setText(this.isEmpDisrupted ? '⚡ EMP SLOW' : '⚡ STATIC')
-        .setPosition(this.x, this.y - 59)
-        .setVisible(true);
+      const nextSlowText = this.isEmpDisrupted ? '⚡ EMP SLOW' : '⚡ STATIC';
+      if (nextSlowText !== this.lastSlowText) {
+        this.lastSlowText = nextSlowText;
+        this.slowLabel.setText(nextSlowText);
+      }
+      this.slowLabel.setPosition(this.x, this.y - 59).setVisible(true);
     } else {
       this.slowLabel.setVisible(false);
     }

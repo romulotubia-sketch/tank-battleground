@@ -1,5 +1,6 @@
 import {
   Award,
+  BarChart3,
   BookOpen,
   ChevronRight,
   Compass,
@@ -11,10 +12,13 @@ import {
   Play,
   Settings,
   Shield,
+  User,
   Wrench,
 } from 'lucide-react';
 import { ArenaPreviewSvg } from '../components/ArenaPreviewSvg';
+import { ScrapBadge } from '../components/ScrapBadge';
 import { TankPreviewSvg } from '../components/TankPreviewSvg';
+import { formatPlaytime } from '../data/progression';
 import {
   getEffectiveTankMaxHp,
   getEffectiveTankMoveSpeed,
@@ -23,7 +27,7 @@ import {
   TANK_DEFINITIONS,
 } from '../data/tanks';
 import { ARENA_DEFINITIONS } from '../game/arenas/arenaLayouts';
-import { PlayerProgression, ScreenId } from '../types/game';
+import { PlayerProgression, ScreenId, TankCustomization, TankId } from '../types/game';
 import {
   enterLandscapeFullscreen,
   exitLandscapeFullscreen,
@@ -32,11 +36,19 @@ import {
 
 interface MainMenuProps {
   progression: PlayerProgression;
+  sessionCustomizations?: Partial<Record<TankId, TankCustomization>>;
+  unclaimedMissionsCount?: number;
   onNavigate: (screen: ScreenId) => void;
   onStartBattle: () => void;
 }
 
-export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuProps) {
+export function MainMenu({
+  progression,
+  sessionCustomizations,
+  unclaimedMissionsCount = 0,
+  onNavigate,
+  onStartBattle,
+}: MainMenuProps) {
   const activeTank = TANK_DEFINITIONS[progression.selectedTank] || TANK_DEFINITIONS.assault;
   const activeArena =
     ARENA_DEFINITIONS[progression.selectedArena] || ARENA_DEFINITIONS.training_grounds;
@@ -59,7 +71,7 @@ export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuPro
 
       {/* Top Command Header */}
       <header
-        className={`relative z-10 w-full max-w-6xl mx-auto px-4 sm:px-7 flex items-center justify-between gap-3 border-b border-[#F3EFE6]/12 shrink-0 bg-[#141714]/75 backdrop-blur-xs ${
+        className={`relative z-10 w-full max-w-6xl mx-auto px-4 sm:px-7 flex flex-wrap items-center justify-between gap-2.5 sm:gap-3 border-b border-[#F3EFE6]/12 shrink-0 bg-[#141714]/75 backdrop-blur-xs ${
           isCompactLandscape ? 'py-2' : 'py-3'
         }`}
       >
@@ -78,20 +90,29 @@ export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuPro
           </div>
         </div>
 
-        {/* Player Profile Area + Quick Utility Controls */}
-        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          <div className="flex items-center gap-2.5 bg-[#1E221D] border border-[#F3EFE6]/15 rounded-xl px-2.5 sm:px-3.5 py-1.5">
+        {/* Player Profile Area + Scrap Balance + Quick Utility Controls */}
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2.5 ml-auto">
+          <ScrapBadge scrap={progression.scrap} compact />
+
+          <button
+            type="button"
+            onClick={() => onNavigate('PROFILE')}
+            aria-label="Open Commander Profile"
+            title="Commander Profile & Milestones"
+            className="min-h-[44px] flex items-center gap-2.5 bg-[#1E221D] border border-[#F3EFE6]/15 hover:border-[#E08E26]/70 hover:bg-[#252A23] rounded-xl px-2.5 sm:px-3.5 py-1.5 text-left transition group"
+          >
             <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-[#2A3027] border border-[#E08E26]/45 flex items-center justify-center font-display font-extrabold text-sm text-[#E08E26] shrink-0">
               {progression.level}
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-xs font-bold text-[#F3EFE6] leading-tight">
-                <span className="truncate max-w-[95px] sm:max-w-[140px]">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-[#F3EFE6] leading-tight">
+                <span className="truncate max-w-[90px] sm:max-w-[130px]">
                   {progression.playerName}
                 </span>
                 <span className="text-[10px] font-mono text-[#E08E26] tabular-nums">
                   LVL {progression.level}
                 </span>
+                <User className="w-3 h-3 text-[#F3EFE6]/45 group-hover:text-[#E08E26] transition hidden sm:inline" />
               </div>
               <div className="flex items-center gap-2 mt-0.5">
                 <div className="w-16 sm:w-20 h-1.5 rounded-full bg-[#141714] overflow-hidden border border-[#F3EFE6]/10">
@@ -105,7 +126,7 @@ export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuPro
                 </span>
               </div>
             </div>
-          </div>
+          </button>
 
           <button
             type="button"
@@ -158,6 +179,12 @@ export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuPro
               <div className="sm:col-span-7 flex items-center gap-3.5 bg-[#141714]/85 border border-[#F3EFE6]/10 rounded-xl p-3">
                 <TankPreviewSvg
                   tank={activeTank}
+                  cosmeticId={progression.equippedCosmetic}
+                  customization={
+                    sessionCustomizations?.[activeTank.id] ??
+                    progression.tankCustomizations?.[activeTank.id] ??
+                    null
+                  }
                   size={isCompactLandscape ? 74 : 96}
                   className="shrink-0"
                 />
@@ -214,36 +241,44 @@ export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuPro
             </div>
 
             {/* Compact Combat Summary Strip */}
-            <div className="grid grid-cols-4 gap-2 mt-3 pt-2.5 border-t border-[#F3EFE6]/10 text-center">
+            <div className="grid grid-cols-5 gap-1 sm:gap-2 mt-3 pt-2.5 border-t border-[#F3EFE6]/10 text-center">
               <div>
-                <div className="font-mono text-sm sm:text-base font-bold tabular-nums text-[#F3EFE6]">
+                <div className="font-mono text-xs sm:text-base font-bold tabular-nums text-[#F3EFE6]">
                   {progression.matchesPlayed}
                 </div>
-                <div className="text-[10px] uppercase tracking-wider text-[#F3EFE6]/50">
+                <div className="text-[9px] sm:text-[10px] uppercase tracking-wider text-[#F3EFE6]/50">
                   Matches
                 </div>
               </div>
               <div>
-                <div className="font-mono text-sm sm:text-base font-bold tabular-nums text-[#22C55E]">
+                <div className="font-mono text-xs sm:text-base font-bold tabular-nums text-[#22C55E]">
                   {progression.wins}
                 </div>
-                <div className="text-[10px] uppercase tracking-wider text-[#F3EFE6]/50">
+                <div className="text-[9px] sm:text-[10px] uppercase tracking-wider text-[#F3EFE6]/50">
                   Wins
                 </div>
               </div>
               <div>
-                <div className="font-mono text-sm sm:text-base font-bold tabular-nums text-[#F3EFE6]">
+                <div className="font-mono text-xs sm:text-base font-bold tabular-nums text-[#F3EFE6]">
                   {progression.totalEliminations}
                 </div>
-                <div className="text-[10px] uppercase tracking-wider text-[#F3EFE6]/50">
+                <div className="text-[9px] sm:text-[10px] uppercase tracking-wider text-[#F3EFE6]/50">
                   Elims
                 </div>
               </div>
               <div>
-                <div className="font-mono text-sm sm:text-base font-bold tabular-nums text-[#E08E26]">
+                <div className="font-mono text-xs sm:text-base font-bold tabular-nums text-sky-400">
+                  {formatPlaytime(progression.totalPlaytimeSec)}
+                </div>
+                <div className="text-[9px] sm:text-[10px] uppercase tracking-wider text-[#F3EFE6]/50">
+                  Playtime
+                </div>
+              </div>
+              <div>
+                <div className="font-mono text-xs sm:text-base font-bold tabular-nums text-[#E08E26]">
                   {progression.bestPlacement ? `#${progression.bestPlacement}` : '—'}
                 </div>
-                <div className="text-[10px] uppercase tracking-wider text-[#F3EFE6]/50">
+                <div className="text-[9px] sm:text-[10px] uppercase tracking-wider text-[#F3EFE6]/50">
                   Best Rank
                 </div>
               </div>
@@ -284,7 +319,7 @@ export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuPro
                   Garage
                 </div>
                 <div className="text-xs text-[#F3EFE6]/60 mt-0.5 truncate">
-                  Inspect &amp; rotate {activeTank.name}
+                  Customize paint, decals &amp; inspect {activeTank.name}
                 </div>
               </div>
             </div>
@@ -302,10 +337,10 @@ export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuPro
               </div>
               <div className="min-w-0">
                 <div className="font-display text-xl font-bold tracking-wide text-[#F3EFE6] leading-none">
-                  Tank Collection
+                  Tank Shop &amp; Hangar
                 </div>
                 <div className="text-xs text-[#F3EFE6]/60 mt-0.5 truncate">
-                  Compare &amp; deploy all 6 combat tanks
+                  Unlock &amp; deploy tanks ({progression.unlockedTanks.length}/6 Unlocked)
                 </div>
               </div>
             </div>
@@ -337,26 +372,63 @@ export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuPro
             <button
               type="button"
               onClick={() => onNavigate('MISSIONS')}
-              className="min-h-[50px] px-3.5 py-2 rounded-xl bg-[#1E221D] border border-[#F3EFE6]/18 hover:border-[#E08E26]/65 hover:bg-[#252A23] transition flex items-center gap-2.5 text-left"
+              className={`min-h-[48px] sm:min-h-[52px] px-3.5 py-2 rounded-xl border transition flex items-center gap-2.5 text-left ${
+                unclaimedMissionsCount > 0
+                  ? 'bg-[#222820] border-[#E08E26]/70 hover:border-[#E08E26] hover:bg-[#283024]'
+                  : 'bg-[#1E221D] border-[#F3EFE6]/18 hover:border-[#E08E26]/65 hover:bg-[#252A23]'
+              }`}
             >
-              <div className="w-9 h-9 rounded-lg bg-[#272D25] border border-[#F3EFE6]/15 flex items-center justify-center shrink-0">
+              <div className="relative w-9 h-9 rounded-lg bg-[#272D25] border border-[#F3EFE6]/15 flex items-center justify-center shrink-0">
                 <Award className="w-4 h-4 text-[#E08E26]" />
+                {unclaimedMissionsCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#E08E26] text-[#141714] font-mono text-[10px] font-extrabold flex items-center justify-center shadow">
+                    {unclaimedMissionsCount}
+                  </span>
+                )}
               </div>
               <div className="min-w-0">
                 <div className="font-display text-lg font-bold leading-none text-[#F3EFE6]">
                   Missions
                 </div>
-                <div className="text-[10px] font-mono text-[#F3EFE6]/55 mt-0.5 truncate">
-                  Stage 11
+                <div
+                  className={`text-[10px] font-mono mt-0.5 truncate ${
+                    unclaimedMissionsCount > 0 ? 'text-[#FDE68A] font-bold' : 'text-[#F3EFE6]/55'
+                  }`}
+                >
+                  {unclaimedMissionsCount > 0
+                    ? `${unclaimedMissionsCount} Claimable`
+                    : 'Daily · Weekly'}
                 </div>
               </div>
             </button>
 
             <button
               type="button"
-              onClick={() => onNavigate('SETTINGS')}
-              className="min-h-[50px] px-3.5 py-2 rounded-xl bg-[#1E221D] border border-[#F3EFE6]/18 hover:border-[#E08E26]/65 hover:bg-[#252A23] transition flex items-center gap-2.5 text-left"
+              onClick={() => onNavigate('STATISTICS')}
+              className="min-h-[48px] sm:min-h-[52px] px-3.5 py-2 rounded-xl bg-[#1E221D] border border-[#F3EFE6]/18 hover:border-[#E08E26]/65 hover:bg-[#252A23] transition flex items-center gap-2.5 text-left"
             >
+              <div className="w-9 h-9 rounded-lg bg-[#272D25] border border-[#F3EFE6]/15 flex items-center justify-center shrink-0">
+                <BarChart3 className="w-4 h-4 text-[#22C55E]" />
+              </div>
+              <div className="min-w-0">
+                <div className="font-display text-lg font-bold leading-none text-[#F3EFE6]">
+                  Statistics
+                </div>
+                <div className="text-[10px] font-mono text-[#F3EFE6]/55 mt-0.5 truncate">
+                  {progression.matchesPlayed > 0
+                    ? `${Math.round((progression.wins / progression.matchesPlayed) * 100)}% Win Rate`
+                    : 'Record · Scrap'}
+                </div>
+              </div>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => onNavigate('SETTINGS')}
+            className="min-h-[46px] sm:min-h-[50px] w-full px-4 py-2 rounded-xl bg-[#1E221D] border border-[#F3EFE6]/18 hover:border-[#E08E26]/65 hover:bg-[#252A23] transition flex items-center justify-between gap-3 text-left group"
+          >
+            <div className="flex items-center gap-3 min-w-0">
               <div className="w-9 h-9 rounded-lg bg-[#272D25] border border-[#F3EFE6]/15 flex items-center justify-center shrink-0">
                 <Settings className="w-4 h-4 text-[#F3EFE6]/85" />
               </div>
@@ -365,11 +437,12 @@ export function MainMenu({ progression, onNavigate, onStartBattle }: MainMenuPro
                   Settings
                 </div>
                 <div className="text-[10px] font-mono text-[#F3EFE6]/55 mt-0.5 truncate">
-                  Audio · Graphics
+                  Audio · Graphics · Controls · Local Save Data
                 </div>
               </div>
-            </button>
-          </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-[#F3EFE6]/45 group-hover:text-[#E08E26] group-hover:translate-x-0.5 transition shrink-0" />
+          </button>
 
           <div className="flex items-center justify-between text-[11px] text-[#F3EFE6]/50 px-1 pt-0.5">
             <span className="inline-flex items-center gap-1.5">

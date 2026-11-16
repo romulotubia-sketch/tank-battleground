@@ -1,6 +1,10 @@
 import Phaser from 'phaser';
-import { ensureProceduralTextures } from '../../assets/ProceduralTextureGenerator';
+import {
+  ensurePlayerTankTextures,
+  ensureProceduralTextures,
+} from '../../assets/ProceduralTextureGenerator';
 import { MINE_SYSTEM_CONFIG, POWERUP_DEFINITIONS } from '../../data/powerups';
+import { calculateMatchScrapBreakdown } from '../../data/progression';
 import { TANK_DEFINITIONS, TANK_LIST } from '../../data/tanks';
 import { platformBridge } from '../../services/bridge/PlaygamaBridgeAdapter';
 import {
@@ -61,6 +65,7 @@ export class ArenaScene extends Phaser.Scene {
   private matchTimeLeft = 150;
   private elapsedMatchSec = 0;
   private matchEnded = false;
+  private matchId = '';
   private paused = false;
   private hudPushTimer = 0;
   private killFeedText: string | null = null;
@@ -79,6 +84,8 @@ export class ArenaScene extends Phaser.Scene {
   private mouseScreenY = 0;
   private lastAimDistance = 420;
   private sceneActive = true;
+  private eventSeq = 0;
+  private matchStartEmitted = false;
 
   private keys?: {
     W: Phaser.Input.Keyboard.Key;
@@ -101,8 +108,18 @@ export class ArenaScene extends Phaser.Scene {
 
   private unsubCommand?: () => void;
   private unsubSettings?: () => void;
+  private unsubPlatform?: () => void;
+  private pausedByUser = false;
+  private pausedByPlatform = false;
   private handleWindowBlur = () => {
-    gameBridge.input.firing = false;
+    gameBridge.resetInput();
+    soundFX.updateMovementAudio(0, false);
+  };
+  private handleVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      gameBridge.resetInput();
+      soundFX.updateMovementAudio(0, false);
+    }
   };
 
   constructor() {
@@ -135,7 +152,10 @@ export class ArenaScene extends Phaser.Scene {
     this.matchTimeLeft = safeData.settings?.matchDurationSec || 150;
     this.elapsedMatchSec = 0;
     this.matchEnded = false;
+    this.matchId = `match_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     this.paused = false;
+    this.pausedByUser = false;
+    this.pausedByPlatform = false;
     this.hudPushTimer = 0;
     this.killFeedText = null;
     this.killFeedTimer = 0;
@@ -152,13 +172,22 @@ export class ArenaScene extends Phaser.Scene {
     this.mouseScreenX = 0;
     this.mouseScreenY = 0;
     this.lastAimDistance = 420;
+    this.eventSeq = 0;
+    this.matchStartEmitted = false;
     this.tanks = [];
     this.obstacles = [];
     this.aiMap.clear();
   }
 
   create(): void {
-    ensureProceduralTextures(this);
+    const playerCosmetic = this.launchConfig.cosmeticId ?? 'default';
+    ensureProceduralTextures(this, playerCosmetic);
+    const playerTex = ensurePlayerTankTextures(
+      this,
+      this.launchConfig.tankId,
+      playerCosmetic,
+      this.launchConfig.customization ?? null
+    );
     soundFX.configure(
       this.launchConfig.settings.soundEnabled,
       this.launchConfig.settings.soundVolume,
@@ -201,7 +230,10 @@ export class ArenaScene extends Phaser.Scene {
       playerDef,
       pSpawn.x,
       pSpawn.y,
-      pSpawn.angle
+      pSpawn.angle,
+      'tactical',
+      playerCosmetic,
+      playerTex
     );
     this.tanks.push(this.playerTank);
 
@@ -239,13 +271,19 @@ export class ArenaScene extends Phaser.Scene {
     this.setupInputs();
     this.unsubCommand = gameBridge.onCommand((cmd) => {
       if (!this.sceneActive) return;
-      if (cmd === 'PAUSE') this.setPaused(true);
-      else if (cmd === 'RESUME') this.setPaused(false);
+      if (cmd === 'PAUSE') this.setPaused(true, 'user');
+      else if (cmd === 'RESUME') this.setPaused(false, 'user');
       else if (cmd === 'RESTART') {
         gameBridge.resetInput();
         const nextConfig = gameBridge.getLaunchConfig() ?? this.launchConfig;
         this.scene.restart(nextConfig);
       }
+    });
+
+    this.unsubPlatform = platformBridge.subscribeState((state) => {
+      if (!this.sceneActive || this.matchEnded) return;
+      const shouldLock = state.isPlatformPaused || state.isAdPlaying || !state.isPageVisible;
+      this.setPaused(shouldLock, 'platform');
     });
 
     this.unsubSettings = gameBridge.onSettingsChange((nextSettings) => {
@@ -263,6 +301,9 @@ export class ArenaScene extends Phaser.Scene {
     });
 
     window.addEventListener('blur', this.handleWindowBlur);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
 
     const cleanupBridgeListeners = () => {
       this.sceneActive = false;
@@ -271,11 +312,22 @@ export class ArenaScene extends Phaser.Scene {
         this.unsubCommand();
         this.unsubCommand = undefined;
       }
+      if (this.unsubPlatform) {
+        this.unsubPlatform();
+        this.unsubPlatform = undefined;
+      }
       if (this.unsubSettings) {
         this.unsubSettings();
         this.unsubSettings = undefined;
       }
       window.removeEventListener('blur', this.handleWindowBlur);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+      }
+      this.powerups?.clear();
+      this.projectiles?.clearAll();
+      this.input?.removeAllListeners();
+      this.input?.keyboard?.removeAllKeys(true);
       this.time.paused = false;
       this.tweens.resumeAll();
       gameBridge.resetInput();
@@ -283,7 +335,13 @@ export class ArenaScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, cleanupBridgeListeners);
     this.events.once(Phaser.Scenes.Events.DESTROY, cleanupBridgeListeners);
 
-    platformBridge.notifyGameplayStart();
+    if (!this.paused) {
+      platformBridge.notifyGameplayStart();
+    }
+    platformBridge.trackEvent('match_started', {
+      tank_id: this.launchConfig.tankId,
+      arena_id: this.arena.id,
+    });
     soundFX.playCountdown(false);
     this.emitHudSnapshot();
   }
@@ -401,8 +459,8 @@ export class ArenaScene extends Phaser.Scene {
       }) as NonNullable<ArenaScene['keys']>;
       this.keys = keys;
 
-      keys.P.on('down', () => this.setPaused(!this.paused));
-      keys.ESC.on('down', () => this.setPaused(!this.paused));
+      keys.P.on('down', () => this.setPaused(!this.pausedByUser, 'user'));
+      keys.ESC.on('down', () => this.setPaused(!this.pausedByUser, 'user'));
       keys.E.on('down', () => {
         if (!this.paused && !this.matchEnded && this.prepRemainingSec <= 0) {
           gameBridge.input.abilityPressed = true;
@@ -464,16 +522,25 @@ export class ArenaScene extends Phaser.Scene {
     });
   }
 
-  private setPaused(value: boolean): void {
+  private setPaused(value: boolean, source: 'user' | 'platform' = 'user'): void {
     if (this.matchEnded) return;
-    this.paused = value;
-    this.time.paused = value;
-    if (value) {
+    if (source === 'user') {
+      this.pausedByUser = value;
+    } else {
+      this.pausedByPlatform = value;
+    }
+    const nextPaused = this.pausedByUser || this.pausedByPlatform;
+    if (this.paused === nextPaused) return;
+    this.paused = nextPaused;
+    this.time.paused = nextPaused;
+    if (nextPaused) {
       this.tweens.pauseAll();
       gameBridge.resetInput();
       soundFX.updateMovementAudio(0, false);
+      platformBridge.notifyGameplayStop();
     } else {
       this.tweens.resumeAll();
+      platformBridge.notifyGameplayStart();
     }
     this.emitHudSnapshot();
   }
@@ -518,6 +585,16 @@ export class ArenaScene extends Phaser.Scene {
       }
       soundFX.playCountdown(true);
       this.effects.spawnRing(this.playerTank.x, this.playerTank.y, 58, 0xe08e26, 0.35);
+      if (!this.matchStartEmitted) {
+        this.matchStartEmitted = true;
+        gameBridge.emitGameplayEvent({
+          eventId: `${this.matchId}:started`,
+          type: 'match_started',
+          matchId: this.matchId,
+          tankId: this.playerTank.definition.id,
+          arenaId: this.arena.id,
+        });
+      }
       this.emitHudSnapshot();
     }
 
@@ -630,7 +707,8 @@ export class ArenaScene extends Phaser.Scene {
       this.arena.height,
       this.effects,
       this.handleBarrelExplosion,
-      this.handleTankEliminated
+      this.handleTankEliminated,
+      this.handleObstacleDestroyed
     );
 
     // 4b. Ambient water shimmer / bush sway & priming explosive barrel fuses
@@ -639,12 +717,14 @@ export class ArenaScene extends Phaser.Scene {
       this.launchConfig.settings.lowDetailMode;
     for (const obs of this.obstacles) {
       if (!obs.alive) continue;
+      obs.updateHitFlash(dt);
       if (!isLowQuality && (obs.type === 'water' || obs.type === 'bush')) {
         obs.updateAmbient(this.elapsedMatchSec);
       }
       if (!obs.isPriming) continue;
       const blast = obs.updateFuse(dt, this.effects);
       if (blast) {
+        this.handleObstacleDestroyed(obs, blast.attackerId);
         this.handleBarrelExplosion(blast.x, blast.y, blast.attackerId);
       }
     }
@@ -669,6 +749,12 @@ export class ArenaScene extends Phaser.Scene {
               : def.name;
           this.recentPickupColor = def.color;
           this.recentPickupTimer = 2.2;
+          gameBridge.emitGameplayEvent({
+            eventId: `${this.matchId}:pwr:${++this.eventSeq}`,
+            type: 'powerup_collected',
+            matchId: this.matchId,
+            powerupId: id,
+          });
           this.emitHudSnapshot();
         }
       }
@@ -840,6 +926,12 @@ export class ArenaScene extends Phaser.Scene {
         )
       ) {
         triggerHaptic(this.launchConfig.settings.vibrationEnabled, 22);
+        gameBridge.emitGameplayEvent({
+          eventId: `${this.matchId}:ability:${++this.eventSeq}`,
+          type: 'ability_activated',
+          matchId: this.matchId,
+          tankId: this.playerTank.definition.id,
+        });
         this.emitHudSnapshot();
       }
     }
@@ -951,11 +1043,25 @@ export class ArenaScene extends Phaser.Scene {
       if (!obs.alive || !obs.destructible) continue;
       if (Math.hypot(obs.x - bx, obs.y - by) <= blastRadius) {
         const destroyed = obs.damage(45, this, attackerId);
-        if (destroyed && obs.type === 'barrel') {
-          this.time.delayedCall(90, () => this.handleBarrelExplosion(obs.x, obs.y, attackerId));
+        if (destroyed) {
+          this.handleObstacleDestroyed(obs, attackerId);
+          if (obs.type === 'barrel') {
+            this.time.delayedCall(90, () => this.handleBarrelExplosion(obs.x, obs.y, attackerId));
+          }
         }
       }
     }
+  };
+
+  private handleObstacleDestroyed = (obs: ObstacleEntity, attackerId: string): void => {
+    if (attackerId !== 'player') return;
+    gameBridge.emitGameplayEvent({
+      eventId: `${this.matchId}:obs:${obs.id}`,
+      type: 'obstacle_destroyed',
+      matchId: this.matchId,
+      obstacleId: obs.id,
+      obstacleType: obs.type,
+    });
   };
 
   private handleTankEliminated = (victim: TankEntity, attackerId: string): void => {
@@ -966,6 +1072,14 @@ export class ArenaScene extends Phaser.Scene {
     if (attacker && attacker.id !== victim.id) {
       attacker.eliminations += 1;
       this.killFeedText = `${attacker.displayName} eliminated ${victim.displayName}`;
+      if (attacker.isPlayer && !victim.isPlayer) {
+        gameBridge.emitGameplayEvent({
+          eventId: `${this.matchId}:elim:${victim.id}`,
+          type: 'tank_elimination',
+          matchId: this.matchId,
+          victimId: victim.id,
+        });
+      }
     } else {
       this.killFeedText = `${victim.displayName} destroyed`;
     }
@@ -1028,9 +1142,13 @@ export class ArenaScene extends Phaser.Scene {
       reason = 'time_outscored';
     }
 
-    const placementRewards = [120, 85, 65, 50, 35, 25, 18, 12];
-    const scrapEarned =
-      (placementRewards[placement - 1] ?? 12) + this.playerTank.eliminations * 15;
+    const scrapBreakdown = calculateMatchScrapBreakdown({
+      victory,
+      placement,
+      eliminations: this.playerTank.eliminations,
+      damageDealt: this.playerTank.damageDealt,
+    });
+    const scrapEarned = scrapBreakdown.totalScrap;
 
     soundFX.playMatchEnd(victory);
     if (victory) platformBridge.notifyHappyTime();
@@ -1040,6 +1158,7 @@ export class ArenaScene extends Phaser.Scene {
     const survivalSec = Math.min(totalDuration, Math.max(0, Math.floor(rawSurvival)));
 
     const result: MatchResult = {
+      matchId: this.matchId || `match_${Date.now()}`,
       victory,
       reason,
       placement,
@@ -1048,10 +1167,30 @@ export class ArenaScene extends Phaser.Scene {
       damageDealt: this.playerTank.damageDealt,
       survivalSec,
       scrapEarned,
+      scrapBreakdown,
       arenaId: this.arena.id,
       tankId: this.playerTank.definition.id,
       winnerName,
     };
+
+    gameBridge.emitGameplayEvent({
+      eventId: `${this.matchId}:completed`,
+      type: 'match_completed',
+      matchId: result.matchId,
+      tankId: result.tankId,
+      arenaId: result.arenaId,
+      placement: result.placement,
+      survivalSec: result.survivalSec,
+    });
+    if (result.victory) {
+      gameBridge.emitGameplayEvent({
+        eventId: `${this.matchId}:victory`,
+        type: 'match_victory',
+        matchId: result.matchId,
+        tankId: result.tankId,
+        arenaId: result.arenaId,
+      });
+    }
 
     gameBridge.emitMatchEnd(result);
   }

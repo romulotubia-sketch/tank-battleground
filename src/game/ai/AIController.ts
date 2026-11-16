@@ -4,6 +4,9 @@ import { ObstacleEntity } from '../entities/ObstacleEntity';
 import { TankEntity } from '../entities/TankEntity';
 import { ActiveWorldPowerup } from '../powerups/PowerupManager';
 import { ProjectilePool } from '../projectiles/ProjectilePool';
+import { hasLineOfSightObstacles } from './lineOfSight';
+export { hasLineOfSightObstacles, segmentIntersectsAabb } from './lineOfSight';
+export type { RectObstacleBounds } from './lineOfSight';
 
 export interface AIDecision {
   moveX: number;
@@ -163,11 +166,13 @@ export class AIController {
 
       // Anti-dogpile: avoid stacking multiple bots onto one already-engaged opponent
       let otherAttackers = 0;
+      const peerRangeSq = 460 * 460;
       for (const peer of allTanks) {
         if (!peer.alive || peer.id === self.id || peer.id === other.id || peer.isPlayer) continue;
-        const peerDist = Math.hypot(other.x - peer.x, other.y - peer.y);
-        if (peerDist > 460) continue;
-        const angleToOther = Math.atan2(other.y - peer.y, other.x - peer.x);
+        const pdx = other.x - peer.x;
+        const pdy = other.y - peer.y;
+        if (pdx * pdx + pdy * pdy > peerRangeSq) continue;
+        const angleToOther = Math.atan2(pdy, pdx);
         if (Math.abs(Phaser.Math.Angle.Wrap(angleToOther - peer.turretAngle)) < 0.5) {
           otherAttackers += 1;
         }
@@ -262,9 +267,12 @@ export class AIController {
       let crowdCenterX = 0;
       let crowdCenterY = 0;
       if (self.definition.id === 'tesla' || self.definition.id === 'phantom') {
+        const crowdRangeSq = 275 * 275;
         for (const other of allTanks) {
           if (!other.alive || other.id === self.id) continue;
-          if (Math.hypot(other.x - self.x, other.y - self.y) <= 275) {
+          const odx = other.x - self.x;
+          const ody = other.y - self.y;
+          if (odx * odx + ody * ody <= crowdRangeSq) {
             nearbyCount += 1;
             crowdCenterX += other.x;
             crowdCenterY += other.y;
@@ -343,15 +351,18 @@ export class AIController {
 
     // Closest-point AABB obstacle/water avoidance + tangent wall sliding + priming barrel evasion
     const avoidMargin = self.radius + 36;
+    const avoidMarginSq = avoidMargin * avoidMargin;
+    const dangerRange = 155;
+    const dangerRangeSq = dangerRange * dangerRange;
     for (const obs of obstacles) {
       if (!obs.alive) continue;
 
       if (obs.isPriming) {
         const bx = self.x - obs.x;
         const by = self.y - obs.y;
-        const bd = Math.hypot(bx, by);
-        const dangerRange = 155;
-        if (bd < dangerRange && bd > 0.01) {
+        const bDistSq = bx * bx + by * by;
+        if (bDistSq < dangerRangeSq && bDistSq > 0.0001) {
+          const bd = Math.sqrt(bDistSq);
           const flee = ((dangerRange - bd) / dangerRange) * 2.8;
           steerX += (bx / bd) * flee;
           steerY += (by / bd) * flee;
@@ -365,9 +376,11 @@ export class AIController {
       const closestY = Phaser.Math.Clamp(self.y, obs.top, obs.bottom);
       const dx = self.x - closestX;
       const dy = self.y - closestY;
-      const d = Math.hypot(dx, dy);
+      const distSq = dx * dx + dy * dy;
+      if (distSq >= avoidMarginSq) continue;
+      const d = Math.sqrt(distSq);
 
-      if (d < avoidMargin) {
+      {
         let nx: number;
         let ny: number;
         if (d > 0.01) {
@@ -467,9 +480,12 @@ export class AIController {
           const maxBarrageRange = self.getEffectiveProjectileRange() * 0.94;
           const targetSpeed = Math.hypot(bestTarget.vx, bestTarget.vy);
           let nearbyCluster = 0;
+          const clusterRangeSq = 170 * 170;
           for (const peer of allTanks) {
             if (!peer.alive || peer.id === self.id || peer.id === bestTarget.id) continue;
-            if (Math.hypot(peer.x - bestTarget.x, peer.y - bestTarget.y) <= 170) {
+            const pdx = peer.x - bestTarget.x;
+            const pdy = peer.y - bestTarget.y;
+            if (pdx * pdx + pdy * pdy <= clusterRangeSq) {
               nearbyCluster += 1;
             }
           }
@@ -515,9 +531,12 @@ export class AIController {
           }
         } else if (self.definition.id === 'phantom') {
           let closeEnemies = 0;
+          const closeRangeSq = 340 * 340;
           for (const other of allTanks) {
             if (!other.alive || other.id === self.id) continue;
-            if (Math.hypot(other.x - self.x, other.y - self.y) <= 340) {
+            const odx = other.x - self.x;
+            const ody = other.y - self.y;
+            if (odx * odx + ody * ody <= closeRangeSq) {
               closeEnemies += 1;
             }
           }
@@ -554,12 +573,14 @@ export class AIController {
         self.fireCooldownTimer <= 0 &&
         this.postShotCooldown <= 0
       ) {
+        const roamClearRangeSq = 120 * 120;
         for (const obs of obstacles) {
           if (!obs.alive || !obs.destructible) continue;
           if (obs.type === 'barrel') continue; // Never self-detonate adjacent barrels while roaming
-          const d = Math.hypot(obs.x - self.x, obs.y - self.y);
-          if (d < 120) {
-            this.cachedAimAngle = Math.atan2(obs.y - self.y, obs.x - self.x);
+          const odx = obs.x - self.x;
+          const ody = obs.y - self.y;
+          if (odx * odx + ody * ody < roamClearRangeSq) {
+            this.cachedAimAngle = Math.atan2(ody, odx);
             this.cachedFire = true;
             this.postShotCooldown = 0.3 + Math.random() * 0.25;
             break;
@@ -595,8 +616,12 @@ export class AIController {
     obstacles: ObstacleEntity[]
   ): number {
     // Avoid walking straight onto a priming explosive barrel for a pickup
+    const barrelDangerSq = 145 * 145;
     for (const obs of obstacles) {
-      if (obs.alive && obs.isPriming && Math.hypot(obs.x - pwr.x, obs.y - pwr.y) < 145) {
+      if (!obs.alive || !obs.isPriming) continue;
+      const dx = obs.x - pwr.x;
+      const dy = obs.y - pwr.y;
+      if (dx * dx + dy * dy < barrelDangerSq) {
         return -Infinity;
       }
     }
@@ -700,17 +725,6 @@ export class AIController {
     y2: number,
     obstacles: ObstacleEntity[]
   ): boolean {
-    const dist = Math.hypot(x2 - x1, y2 - y1);
-    const steps = Math.max(8, Math.ceil(dist / 24));
-    for (let s = 1; s < steps; s++) {
-      const t = s / steps;
-      const px = x1 + (x2 - x1) * t;
-      const py = y1 + (y2 - y1) * t;
-      for (const obs of obstacles) {
-        if (!obs.alive || !obs.blocksProjectiles) continue;
-        if (obs.containsPoint(px, py, 2)) return false;
-      }
-    }
-    return true;
+    return hasLineOfSightObstacles(x1, y1, x2, y2, obstacles, 2);
   }
 }

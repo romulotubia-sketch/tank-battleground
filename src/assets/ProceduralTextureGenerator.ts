@@ -1,7 +1,10 @@
 import Phaser from 'phaser';
+import { drawCanvasDecal } from '../components/TankDecalRenderer';
+import { getCustomizationSignature, resolveEffectiveTankVisual } from '../data/customization';
 import { POWERUP_DEFINITIONS, POWERUP_IDS } from '../data/powerups';
-import { TANK_LIST } from '../data/tanks';
-import { TankDefinition } from '../types/game';
+import { getEffectiveTankVisual } from '../data/progression';
+import { TANK_DEFINITIONS, TANK_LIST } from '../data/tanks';
+import { CosmeticId, TankCustomization, TankDefinition, TankId, TankVisualConfig } from '../types/game';
 
 /**
  * Asset Replacement Registry
@@ -60,8 +63,13 @@ function makeCanvasTexture(
   tex.refresh();
 }
 
-function drawTankHull(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
-  const { visual } = tank;
+function drawTankHull(
+  ctx: CanvasRenderingContext2D,
+  tank: TankDefinition,
+  visualOverride?: TankVisualConfig,
+  customization?: TankCustomization | null
+) {
+  const visual = visualOverride ?? tank.visual;
   const cx = 40;
   const cy = 40;
 
@@ -210,10 +218,30 @@ function drawTankHull(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
   ctx.lineWidth = 1.8;
   ctx.strokeStyle = INK;
   ctx.stroke();
+
+  if (customization && customization.decalId !== 'none') {
+    drawCanvasDecal(
+      ctx,
+      cx,
+      cy,
+      customization.decalId,
+      customization.decalColor,
+      customization.decalPosition,
+      visual.silhouette,
+      'hull',
+      0.92
+    );
+  }
 }
 
-function drawTankTurret(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
-  const { visual } = tank;
+function drawTankTurret(
+  ctx: CanvasRenderingContext2D,
+  tank: TankDefinition,
+  visualOverride?: TankVisualConfig,
+  customization?: TankCustomization | null
+) {
+  const visual = visualOverride ?? tank.visual;
+  const barrelColor = visual.barrelColor ?? visual.hullSecondary;
   const cx = 36; // pivot slightly left so long barrel fits in 96x64
   const cy = 32;
 
@@ -221,15 +249,15 @@ function drawTankTurret(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
   if (visual.silhouette === 'heavy') {
     // Fortress heavy cannon + twin recoil collar
     drawInkRect(ctx, cx + 6, cy - 7.5, 12, 15, visual.hullPrimary, 3, 2.2);
-    drawInkRect(ctx, cx + 10, cy - 5.5, 27, 11, visual.hullSecondary, 2.5, 2.5);
+    drawInkRect(ctx, cx + 10, cy - 5.5, 27, 11, barrelColor, 2.5, 2.5);
     drawInkRect(ctx, cx + 32, cy - 7, 7.5, 14, visual.accentColor, 2, 2);
   } else if (visual.silhouette === 'long_barrel') {
     // Artillery extra-long rifled siege barrel + slotted muzzle brake
     drawInkRect(ctx, cx + 7, cy - 6.5, 14, 13, visual.hullPrimary, 3, 2.2);
-    drawInkRect(ctx, cx + 12, cy - 4, 41, 8, visual.hullSecondary, 2, 2.5);
+    drawInkRect(ctx, cx + 12, cy - 4, 41, 8, barrelColor, 2, 2.5);
     drawInkRect(ctx, cx + 48, cy - 6, 8, 12, visual.accentColor, 2, 2);
   } else if (visual.silhouette === 'coil') {
-    drawInkRect(ctx, cx + 8, cy - 5, 29, 10, visual.hullSecondary, 3, 2.5);
+    drawInkRect(ctx, cx + 8, cy - 5, 29, 10, barrelColor, 3, 2.5);
     // Emitter prongs at muzzle
     ctx.strokeStyle = INK;
     ctx.lineWidth = 4.5;
@@ -257,15 +285,15 @@ function drawTankTurret(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
       ctx.stroke();
     }
   } else if (visual.silhouette === 'sleek') {
-    drawInkRect(ctx, cx + 6, cy - 3.5, 29, 7, visual.hullSecondary, 2, 2.5);
+    drawInkRect(ctx, cx + 6, cy - 3.5, 29, 7, barrelColor, 2, 2.5);
     drawInkRect(ctx, cx + 31, cy - 4.5, 5, 9, visual.accentColor, 1.5, 1.8);
   } else if (visual.silhouette === 'angular') {
-    drawInkRect(ctx, cx + 6, cy - 3.5, 32, 7, visual.hullSecondary, 2, 2.5);
+    drawInkRect(ctx, cx + 6, cy - 3.5, 32, 7, barrelColor, 2, 2.5);
     drawInkRect(ctx, cx + 33, cy - 4.5, 6, 9, visual.accentColor, 2, 2);
   } else {
     // Assault balanced cannon + coaxial barrel stub
     drawInkRect(ctx, cx + 10, cy + 4, 15, 3.5, '#2A2F26', 1, 1.4);
-    drawInkRect(ctx, cx + 6, cy - 4.5, 33, 9, visual.hullSecondary, 3, 2.5);
+    drawInkRect(ctx, cx + 6, cy - 4.5, 33, 9, barrelColor, 3, 2.5);
     drawInkRect(ctx, cx + 34, cy - 5.5, 6, 11, visual.accentColor, 2, 2);
   }
 
@@ -320,15 +348,70 @@ function drawTankTurret(ctx: CanvasRenderingContext2D, tank: TankDefinition) {
   ctx.lineWidth = 2;
   ctx.strokeStyle = INK;
   ctx.stroke();
+
+  if (customization && customization.decalId !== 'none') {
+    drawCanvasDecal(
+      ctx,
+      cx,
+      cy,
+      customization.decalId,
+      customization.decalColor,
+      customization.decalPosition,
+      visual.silhouette,
+      'turret',
+      0.92
+    );
+  }
 }
 
-export function ensureProceduralTextures(scene: Phaser.Scene): void {
-  // 1. All 6 Tank hulls and turrets
+export function ensurePlayerTankTextures(
+  scene: Phaser.Scene,
+  tankId: TankId,
+  cosmeticId: CosmeticId = 'default',
+  customization?: TankCustomization | null
+): { hullKey: string; turretKey: string } {
+  const tank = TANK_DEFINITIONS[tankId] || TANK_LIST[0];
+  if (!customization && cosmeticId === 'default') {
+    return {
+      hullKey: `tank_hull_${tank.id}`,
+      turretKey: `tank_turret_${tank.id}`,
+    };
+  }
+
+  const sig = getCustomizationSignature(tank.id, cosmeticId, customization);
+  const hullKey = `tank_hull_${sig}`;
+  const turretKey = `tank_turret_${sig}`;
+  const visual = resolveEffectiveTankVisual(tank, cosmeticId, customization);
+
+  makeCanvasTexture(scene, hullKey, 80, 80, (ctx) =>
+    drawTankHull(ctx, tank, visual, customization)
+  );
+  makeCanvasTexture(scene, turretKey, 96, 64, (ctx) =>
+    drawTankTurret(ctx, tank, visual, customization)
+  );
+
+  return { hullKey, turretKey };
+}
+
+export function ensureProceduralTextures(
+  scene: Phaser.Scene,
+  playerCosmeticId: CosmeticId = 'default'
+): void {
+  // 1. All 6 Tank hulls and turrets (plus cosmetic variant if equipped)
   for (const tank of TANK_LIST) {
     makeCanvasTexture(scene, `tank_hull_${tank.id}`, 80, 80, (ctx) => drawTankHull(ctx, tank));
     makeCanvasTexture(scene, `tank_turret_${tank.id}`, 96, 64, (ctx) =>
       drawTankTurret(ctx, tank)
     );
+    if (playerCosmeticId !== 'default') {
+      const cosmeticVisual = getEffectiveTankVisual(tank, playerCosmeticId);
+      makeCanvasTexture(scene, `tank_hull_${tank.id}_${playerCosmeticId}`, 80, 80, (ctx) =>
+        drawTankHull(ctx, tank, cosmeticVisual)
+      );
+      makeCanvasTexture(scene, `tank_turret_${tank.id}_${playerCosmeticId}`, 96, 64, (ctx) =>
+        drawTankTurret(ctx, tank, cosmeticVisual)
+      );
+    }
   }
 
   // 2. Obstacles (brick, steel, crate, bush, water, barrel)

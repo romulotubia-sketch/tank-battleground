@@ -1,0 +1,7 @@
+{
+  "advertisement": {
+    "minimumDelayBetweenInterstitial": 60,
+    "useBuiltInErrorPopup": false
+  },
+  "sendAnalyticsEvents": true
+}

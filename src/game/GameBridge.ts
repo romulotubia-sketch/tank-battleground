@@ -1,4 +1,13 @@
-import { ArenaId, GameSettings, HUDStateSnapshot, MatchResult, TankId } from '../types/game';
+import {
+  ArenaId,
+  CosmeticId,
+  GameSettings,
+  GameplayEvent,
+  HUDStateSnapshot,
+  MatchResult,
+  TankCustomization,
+  TankId,
+} from '../types/game';
 
 /**
  * Mutable input state read directly by Phaser at 60fps.
@@ -23,6 +32,8 @@ export interface PlayerInputState {
 export interface MatchLaunchConfig {
   tankId: TankId;
   arenaId: ArenaId;
+  cosmeticId?: CosmeticId;
+  customization?: TankCustomization | null;
   settings: GameSettings;
 }
 
@@ -30,6 +41,7 @@ type HudListener = (snapshot: HUDStateSnapshot) => void;
 type MatchEndListener = (result: MatchResult) => void;
 type CommandListener = (cmd: 'PAUSE' | 'RESUME' | 'RESTART') => void;
 type SettingsListener = (settings: GameSettings) => void;
+type GameplayEventListener = (event: GameplayEvent) => void;
 
 class GameBridgeBus {
   readonly input: PlayerInputState = {
@@ -52,6 +64,7 @@ class GameBridgeBus {
   private matchEndListeners = new Set<MatchEndListener>();
   private commandListeners = new Set<CommandListener>();
   private settingsListeners = new Set<SettingsListener>();
+  private gameplayEventListeners = new Set<GameplayEventListener>();
   private lastHudSnapshot: HUDStateSnapshot | null = null;
   private activeLaunchConfig: MatchLaunchConfig | null = null;
 
@@ -123,6 +136,15 @@ class GameBridgeBus {
 
   emitSettingsChange(settings: GameSettings): void {
     this.settingsListeners.forEach((cb) => cb(settings));
+  }
+
+  onGameplayEvent(cb: GameplayEventListener): () => void {
+    this.gameplayEventListeners.add(cb);
+    return () => this.gameplayEventListeners.delete(cb);
+  }
+
+  emitGameplayEvent(event: GameplayEvent): void {
+    this.gameplayEventListeners.forEach((cb) => cb(event));
   }
 }
 

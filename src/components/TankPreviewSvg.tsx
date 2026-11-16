@@ -1,7 +1,11 @@
-import { TankDefinition } from '../types/game';
+import { resolveEffectiveTankVisual } from '../data/customization';
+import { CosmeticId, TankCustomization, TankDefinition } from '../types/game';
+import { TankDecalSvg } from './TankDecalSvg';
 
 interface TankPreviewSvgProps {
   tank: TankDefinition;
+  cosmeticId?: CosmeticId;
+  customization?: TankCustomization | null;
   size?: number;
   hullAngleDeg?: number;
   turretAngleDeg?: number;
@@ -10,12 +14,15 @@ interface TankPreviewSvgProps {
 
 export function TankPreviewSvg({
   tank,
+  cosmeticId = 'default',
+  customization = null,
   size = 96,
   hullAngleDeg = -18,
   turretAngleDeg,
   className = '',
 }: TankPreviewSvgProps) {
-  const { visual } = tank;
+  const visual = resolveEffectiveTankVisual(tank, cosmeticId, customization);
+  const barrelColor = visual.barrelColor ?? visual.hullSecondary;
   const ink = '#161815';
   const effectiveTurretDeg = turretAngleDeg ?? hullAngleDeg;
   const relativeTurretDeg = effectiveTurretDeg - hullAngleDeg;
@@ -224,6 +231,17 @@ export function TankPreviewSvg({
           strokeWidth={2}
         />
 
+        {/* Hull-Mounted Decals */}
+        {customization && customization.decalId !== 'none' && (
+          <TankDecalSvg
+            decalId={customization.decalId}
+            decalColor={customization.decalColor}
+            position={customization.decalPosition}
+            silhouette={visual.silhouette}
+            layer="hull"
+          />
+        )}
+
         {/* Independent Turret & Barrel Group */}
         <g transform={`rotate(${relativeTurretDeg})`}>
         {/* Barrel */}
@@ -236,7 +254,7 @@ export function TankPreviewSvg({
               width={43}
               height={9}
               rx={2}
-              fill={visual.hullSecondary}
+              fill={barrelColor}
               stroke={ink}
               strokeWidth={2.5}
             />
@@ -260,7 +278,7 @@ export function TankPreviewSvg({
               width={29}
               height={12}
               rx={3}
-              fill={visual.hullSecondary}
+              fill={barrelColor}
               stroke={ink}
               strokeWidth={2.5}
             />
@@ -283,7 +301,7 @@ export function TankPreviewSvg({
               width={32}
               height={10}
               rx={3}
-              fill={visual.hullSecondary}
+              fill={barrelColor}
               stroke={ink}
               strokeWidth={2.5}
             />
@@ -303,7 +321,7 @@ export function TankPreviewSvg({
               width={34}
               height={10}
               rx={3}
-              fill={visual.hullSecondary}
+              fill={barrelColor}
               stroke={ink}
               strokeWidth={2.5}
             />
@@ -365,6 +383,17 @@ export function TankPreviewSvg({
           stroke={ink}
           strokeWidth={2}
         />
+
+        {/* Turret-Mounted Decal */}
+        {customization && customization.decalId !== 'none' && (
+          <TankDecalSvg
+            decalId={customization.decalId}
+            decalColor={customization.decalColor}
+            position={customization.decalPosition}
+            silhouette={visual.silhouette}
+            layer="turret"
+          />
+        )}
         </g>
       </g>
     </svg>

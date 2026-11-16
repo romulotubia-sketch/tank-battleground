@@ -103,7 +103,7 @@ export function GameHUD({
     const snap = gameBridge.getLastHudSnapshot();
     return snap && snap.tankId === selectedTankId ? snap : createInitialHud(selectedTankId);
   });
-  const { isTouchDevice, isCompactLandscape, isFullscreen, canFullscreen } =
+  const { width: viewportWidth, isTouchDevice, isCompactLandscape, isFullscreen, canFullscreen } =
     useViewportOrientation();
 
   useEffect(() => {
@@ -113,6 +113,7 @@ export function GameHUD({
   }, [selectedTankId]);
 
   const showControls = settings.showTouchControls === 'always' || isTouchDevice;
+  const isNarrowScreen = viewportWidth < 560;
   const hpPct = Math.max(0, Math.min(100, (hud.hp / Math.max(1, hud.maxHp)) * 100));
   const abilityReady = hud.abilityCooldownSec <= 0.05;
   const abilityActive = hud.abilityActiveSec > 0;
@@ -125,17 +126,35 @@ export function GameHUD({
         )
       : 0;
 
-  const stickSize = isCompactLandscape ? 92 : 110;
-  const fireSize = isCompactLandscape ? 'w-[60px] h-[60px]' : 'w-[68px] h-[68px] sm:w-[76px] sm:h-[76px]';
-  const abilitySize = isCompactLandscape ? 'w-[52px] h-[52px]' : 'w-[58px] h-[58px] sm:w-[64px] sm:h-[64px]';
-  const reloadBtnSize = isCompactLandscape ? 'w-[46px] h-[46px]' : 'w-[50px] h-[50px] sm:w-[56px] sm:h-[56px]';
+  const stickSize = isNarrowScreen ? 88 : isCompactLandscape ? 92 : 110;
+  const fireSize = isNarrowScreen
+    ? 'w-[56px] h-[56px]'
+    : isCompactLandscape
+    ? 'w-[60px] h-[60px]'
+    : 'w-[68px] h-[68px] sm:w-[76px] sm:h-[76px]';
+  const abilitySize = isNarrowScreen
+    ? 'w-[46px] h-[46px]'
+    : isCompactLandscape
+    ? 'w-[52px] h-[52px]'
+    : 'w-[58px] h-[58px] sm:w-[64px] sm:h-[64px]';
+  const reloadBtnSize = isNarrowScreen
+    ? 'w-[44px] h-[44px]'
+    : isCompactLandscape
+    ? 'w-[46px] h-[46px]'
+    : 'w-[50px] h-[50px] sm:w-[56px] sm:h-[56px]';
 
   return (
     <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between safe-area-hud sm:p-3">
       {/* Compact Top Bar */}
       <div className="flex items-start justify-between gap-2">
         {/* Player Armor, Tank Identity & Active Buffs */}
-        <div className="pointer-events-auto flex flex-col gap-1 min-w-[165px] sm:min-w-[230px] bg-[#141714]/82 border border-[#F3EFE6]/20 rounded-lg px-3 py-1.5 backdrop-blur-xs">
+        <div
+          className={`pointer-events-auto flex flex-col gap-1 bg-[#141714]/82 border border-[#F3EFE6]/20 rounded-lg backdrop-blur-xs ${
+            isCompactLandscape || isNarrowScreen
+              ? 'min-w-[144px] max-w-[178px] px-2.5 py-1'
+              : 'min-w-[165px] sm:min-w-[230px] px-3 py-1.5'
+          }`}
+        >
           <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider font-semibold text-[#E08E26]">
             <span className="truncate">{hud.tankName}</span>
             {hud.shieldHp > 0 && (
@@ -204,7 +223,7 @@ export function GameHUD({
                 style={{ width: `${reloadProgressPct}%` }}
               />
             </div>
-          ) : (
+          ) : !isCompactLandscape || hud.maxAmmo <= 10 ? (
             <div className="flex items-center gap-0.5">
               {Array.from({ length: hud.maxAmmo }).map((_, i) => (
                 <span
@@ -219,7 +238,7 @@ export function GameHUD({
                 />
               ))}
             </div>
-          )}
+          ) : null}
 
           {/* Active Ability Status */}
           <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px] font-mono tabular-nums">
@@ -434,9 +453,9 @@ export function GameHUD({
 
       {/* Bottom Touch Controls */}
       {showControls && !hud.isPaused && (
-        <div className="flex items-end justify-between gap-3 pb-0.5 px-1 sm:px-3">
+        <div className="flex items-end justify-between gap-2 sm:gap-3 pb-0.5 px-1 sm:px-3">
           {/* Left Movement Joystick */}
-          <div className="pointer-events-auto">
+          <div className="pointer-events-auto shrink-0">
             <TouchJoystick
               label="Move"
               accentColor="#E08E26"
@@ -449,155 +468,180 @@ export function GameHUD({
             />
           </div>
 
-          {/* Right Combat Cluster: Ability + Aim Joystick + Fire */}
-          <div className="pointer-events-auto flex items-end gap-2 sm:gap-3.5">
-            {/* Active Ability Button */}
-            <button
-              type="button"
-              disabled={!abilityReady || abilityActive || hud.isPreparing}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                if (abilityReady && !abilityActive && !hud.isPreparing) {
-                  gameBridge.input.abilityPressed = true;
-                }
-              }}
-              aria-label={`Activate ${hud.abilityName}`}
-              className={`touch-none-game relative ${abilitySize} rounded-full border-2 flex flex-col items-center justify-center font-display font-bold transition active:scale-95 ${
-                hud.isPreparing
-                  ? 'bg-[#141714]/65 border-[#F3EFE6]/20 text-[#F3EFE6]/40 cursor-not-allowed'
-                  : abilityActive
-                  ? hud.abilityName === 'Fortress Shield'
-                    ? 'bg-sky-500 border-[#F3EFE6] text-[#141714]'
-                    : hud.abilityName === 'Afterburner'
-                    ? 'bg-[#FACC15] border-[#FEF08A] text-[#141714]'
-                    : hud.abilityName === 'Shell Barrage'
-                    ? 'bg-[#EF4444] border-[#FCA5A5] text-[#F3EFE6]'
-                    : hud.abilityName === 'EMP Pulse'
-                    ? 'bg-[#22D3EE] border-[#A5F3FC] text-[#141714]'
-                    : hud.abilityName === 'Phase Shift'
-                    ? 'bg-[#A78BFA] border-[#DDD6FE] text-[#141714]'
-                    : 'bg-[#E08E26] border-[#F3EFE6] text-[#141714]'
-                  : abilityReady
-                  ? hud.abilityName === 'EMP Pulse'
-                    ? 'bg-[#16343D]/90 border-[#22D3EE] text-[#E0F2FE]'
-                    : hud.abilityName === 'Phase Shift'
-                    ? 'bg-[#2B2240]/90 border-[#A78BFA] text-[#EDE9FE]'
-                    : 'bg-[#2B3329]/90 border-[#E08E26] text-[#F3EFE6]'
-                  : 'bg-[#141714]/80 border-[#F3EFE6]/25 text-[#F3EFE6]/60'
-              }`}
-            >
-              <Zap className="w-4 h-4" />
-              <span className="text-[10px] sm:text-[11px] leading-tight mt-0.5 tabular-nums">
-                {abilityActive
-                  ? `${Math.ceil(hud.abilityActiveSec)}s`
-                  : abilityReady
-                  ? 'ABILITY'
-                  : `${Math.ceil(hud.abilityCooldownSec)}s`}
-              </span>
-            </button>
+          {/* Right Combat Cluster: stacks utility buttons above Aim+Fire on narrow screens (<560px) to avoid horizontal clipping */}
+          <div
+            className={`pointer-events-auto flex items-end ${
+              isNarrowScreen ? 'flex-col gap-1.5' : 'gap-2 sm:gap-3.5'
+            }`}
+          >
+            <div className="flex items-end gap-1.5 sm:gap-2.5">
+              {/* Active Ability Button */}
+              <button
+                type="button"
+                disabled={!abilityReady || abilityActive || hud.isPreparing}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (abilityReady && !abilityActive && !hud.isPreparing) {
+                    gameBridge.input.abilityPressed = true;
+                  }
+                }}
+                aria-label={`Activate ${hud.abilityName}`}
+                className={`touch-none-game relative ${abilitySize} rounded-full border-2 flex flex-col items-center justify-center font-display font-bold transition active:scale-95 select-none ${
+                  hud.isPreparing
+                    ? 'bg-[#141714]/65 border-[#F3EFE6]/20 text-[#F3EFE6]/40 cursor-not-allowed'
+                    : abilityActive
+                    ? hud.abilityName === 'Fortress Shield'
+                      ? 'bg-sky-500 border-[#F3EFE6] text-[#141714]'
+                      : hud.abilityName === 'Afterburner'
+                      ? 'bg-[#FACC15] border-[#FEF08A] text-[#141714]'
+                      : hud.abilityName === 'Shell Barrage'
+                      ? 'bg-[#EF4444] border-[#FCA5A5] text-[#F3EFE6]'
+                      : hud.abilityName === 'EMP Pulse'
+                      ? 'bg-[#22D3EE] border-[#A5F3FC] text-[#141714]'
+                      : hud.abilityName === 'Phase Shift'
+                      ? 'bg-[#A78BFA] border-[#DDD6FE] text-[#141714]'
+                      : 'bg-[#E08E26] border-[#F3EFE6] text-[#141714]'
+                    : abilityReady
+                    ? hud.abilityName === 'EMP Pulse'
+                      ? 'bg-[#16343D]/90 border-[#22D3EE] text-[#E0F2FE]'
+                      : hud.abilityName === 'Phase Shift'
+                      ? 'bg-[#2B2240]/90 border-[#A78BFA] text-[#EDE9FE]'
+                      : 'bg-[#2B3329]/90 border-[#E08E26] text-[#F3EFE6]'
+                    : 'bg-[#141714]/80 border-[#F3EFE6]/25 text-[#F3EFE6]/60'
+                }`}
+              >
+                <Zap className="w-4 h-4" />
+                <span className="text-[9px] sm:text-[11px] leading-tight mt-0.5 tabular-nums">
+                  {abilityActive
+                    ? `${Math.ceil(hud.abilityActiveSec)}s`
+                    : abilityReady
+                    ? 'ABILITY'
+                    : `${Math.ceil(hud.abilityCooldownSec)}s`}
+                </span>
+              </button>
 
-            {/* Mine Deploy Button (shown when holding Mine Kit charges) */}
-            {hud.mineCharges > 0 && (
+              {/* Mine Deploy Button (shown when holding Mine Kit charges) */}
+              {hud.mineCharges > 0 && (
+                <button
+                  type="button"
+                  disabled={hud.isPreparing}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!hud.isPreparing) {
+                      gameBridge.input.deployMinePressed = true;
+                    }
+                  }}
+                  aria-label="Deploy proximity mine"
+                  className={`touch-none-game relative ${reloadBtnSize} rounded-full border-2 flex flex-col items-center justify-center font-display font-bold transition active:scale-95 select-none ${
+                    hud.isPreparing
+                      ? 'bg-[#141714]/65 border-[#F3EFE6]/20 text-[#F3EFE6]/35 cursor-not-allowed'
+                      : 'bg-[#3D2212]/92 border-orange-400 text-orange-200'
+                  }`}
+                >
+                  <Target className="w-3.5 h-3.5 text-orange-400" />
+                  <span className="text-[9px] sm:text-[10px] leading-tight mt-0.5 tabular-nums">
+                    MINE ({hud.mineCharges})
+                  </span>
+                </button>
+              )}
+
+              {/* Manual Reload Button */}
+              <button
+                type="button"
+                disabled={!canManualReload}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (canManualReload) {
+                    gameBridge.input.reloadPressed = true;
+                  }
+                }}
+                aria-label="Reload magazine"
+                className={`touch-none-game relative ${reloadBtnSize} rounded-full border-2 flex flex-col items-center justify-center font-display font-bold transition active:scale-95 select-none ${
+                  hud.isReloading
+                    ? 'bg-[#2E2A16]/90 border-[#FACC15] text-[#FACC15] cursor-wait'
+                    : canManualReload
+                    ? 'bg-[#2B3329]/90 border-[#F3EFE6]/75 text-[#F3EFE6]'
+                    : 'bg-[#141714]/65 border-[#F3EFE6]/20 text-[#F3EFE6]/35 cursor-not-allowed'
+                }`}
+              >
+                <RotateCw className={`w-3.5 h-3.5 ${hud.isReloading ? 'animate-spin' : ''}`} />
+                <span className="text-[9px] sm:text-[10px] leading-tight mt-0.5 tabular-nums">
+                  {hud.isReloading ? `${hud.reloadRemainingSec.toFixed(1)}s` : 'RELOAD'}
+                </span>
+              </button>
+            </div>
+
+            <div className="flex items-end gap-2 sm:gap-3.5">
+              {/* Aiming Joystick */}
+              <TouchJoystick
+                label="Aim"
+                accentColor="#F3EFE6"
+                size={stickSize}
+                sensitivity={settings.controlSensitivity}
+                onChange={(nx, ny, active) => {
+                  if (hud.isPreparing) {
+                    gameBridge.input.aimX = 0;
+                    gameBridge.input.aimY = 0;
+                    gameBridge.input.aimActive = false;
+                    return;
+                  }
+                  gameBridge.input.aimX = nx;
+                  gameBridge.input.aimY = ny;
+                  gameBridge.input.aimActive = active;
+                }}
+              />
+
+              {/* Dedicated Fire Button */}
               <button
                 type="button"
                 disabled={hud.isPreparing}
                 onPointerDown={(e) => {
                   e.preventDefault();
-                  if (!hud.isPreparing) {
-                    gameBridge.input.deployMinePressed = true;
+                  e.stopPropagation();
+                  if (hud.isPreparing) return;
+                  try {
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                  } catch {
+                    // Ignore environments without pointer capture
                   }
+                  gameBridge.input.firePressed = true;
+                  gameBridge.input.firing = true;
                 }}
-                aria-label="Deploy proximity mine"
-                className={`touch-none-game relative ${reloadBtnSize} rounded-full border-2 flex flex-col items-center justify-center font-display font-bold transition active:scale-95 ${
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  try {
+                    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                      e.currentTarget.releasePointerCapture(e.pointerId);
+                    }
+                  } catch {
+                    // Ignore
+                  }
+                  gameBridge.input.firing = false;
+                }}
+                onPointerCancel={(e) => {
+                  e.stopPropagation();
+                  gameBridge.input.firing = false;
+                }}
+                onLostPointerCapture={() => {
+                  gameBridge.input.firing = false;
+                }}
+                aria-label="Fire cannon"
+                className={`touch-none-game ${fireSize} rounded-full border-2 font-display font-extrabold text-xs sm:text-sm tracking-wide flex flex-col items-center justify-center shadow-lg transition select-none ${
                   hud.isPreparing
-                    ? 'bg-[#141714]/65 border-[#F3EFE6]/20 text-[#F3EFE6]/35 cursor-not-allowed'
-                    : 'bg-[#3D2212]/92 border-orange-400 text-orange-200'
+                    ? 'bg-[#6E2A22]/65 border-[#F3EFE6]/35 text-[#F3EFE6]/50 cursor-not-allowed'
+                    : hud.isReloading || hud.ammo <= 0
+                    ? 'bg-[#42371B]/90 border-[#FACC15]/75 text-[#FACC15] active:scale-95'
+                    : 'bg-[#C93A2B] border-[#F3EFE6]/85 text-[#F3EFE6] active:scale-95'
                 }`}
               >
-                <Target className="w-3.5 h-3.5 text-orange-400" />
-                <span className="text-[9px] sm:text-[10px] leading-tight mt-0.5 tabular-nums">
-                  MINE ({hud.mineCharges})
-                </span>
+                <Crosshair className="w-4 h-4 sm:w-5 sm:h-5 mb-0.5" />
+                {hud.isReloading ? 'WAIT' : hud.ammo <= 0 ? 'EMPTY' : 'FIRE'}
               </button>
-            )}
-
-            {/* Manual Reload Button */}
-            <button
-              type="button"
-              disabled={!canManualReload}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                if (canManualReload) {
-                  gameBridge.input.reloadPressed = true;
-                }
-              }}
-              aria-label="Reload magazine"
-              className={`touch-none-game relative ${reloadBtnSize} rounded-full border-2 flex flex-col items-center justify-center font-display font-bold transition active:scale-95 ${
-                hud.isReloading
-                  ? 'bg-[#2E2A16]/90 border-[#FACC15] text-[#FACC15] cursor-wait'
-                  : canManualReload
-                  ? 'bg-[#2B3329]/90 border-[#F3EFE6]/75 text-[#F3EFE6]'
-                  : 'bg-[#141714]/65 border-[#F3EFE6]/20 text-[#F3EFE6]/35 cursor-not-allowed'
-              }`}
-            >
-              <RotateCw className={`w-3.5 h-3.5 ${hud.isReloading ? 'animate-spin' : ''}`} />
-              <span className="text-[9px] sm:text-[10px] leading-tight mt-0.5 tabular-nums">
-                {hud.isReloading ? `${hud.reloadRemainingSec.toFixed(1)}s` : 'RELOAD'}
-              </span>
-            </button>
-
-            {/* Aiming Joystick */}
-            <TouchJoystick
-              label="Aim"
-              accentColor="#F3EFE6"
-              size={stickSize}
-              sensitivity={settings.controlSensitivity}
-              onChange={(nx, ny, active) => {
-                if (hud.isPreparing) {
-                  gameBridge.input.aimX = 0;
-                  gameBridge.input.aimY = 0;
-                  gameBridge.input.aimActive = false;
-                  return;
-                }
-                gameBridge.input.aimX = nx;
-                gameBridge.input.aimY = ny;
-                gameBridge.input.aimActive = active;
-              }}
-            />
-
-            {/* Dedicated Fire Button */}
-            <button
-              type="button"
-              disabled={hud.isPreparing}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                if (hud.isPreparing) return;
-                e.currentTarget.setPointerCapture(e.pointerId);
-                gameBridge.input.firePressed = true;
-                gameBridge.input.firing = true;
-              }}
-              onPointerUp={(e) => {
-                e.preventDefault();
-                if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-                  e.currentTarget.releasePointerCapture(e.pointerId);
-                }
-                gameBridge.input.firing = false;
-              }}
-              onPointerCancel={() => {
-                gameBridge.input.firing = false;
-              }}
-              aria-label="Fire cannon"
-              className={`touch-none-game ${fireSize} rounded-full border-2 font-display font-extrabold text-xs sm:text-sm tracking-wide flex flex-col items-center justify-center shadow-lg transition ${
-                hud.isPreparing
-                  ? 'bg-[#6E2A22]/65 border-[#F3EFE6]/35 text-[#F3EFE6]/50 cursor-not-allowed'
-                  : hud.isReloading || hud.ammo <= 0
-                  ? 'bg-[#42371B]/90 border-[#FACC15]/75 text-[#FACC15] active:scale-95'
-                  : 'bg-[#C93A2B] border-[#F3EFE6]/85 text-[#F3EFE6] active:scale-95'
-              }`}
-            >
-              <Crosshair className="w-4 h-4 sm:w-5 sm:h-5 mb-0.5" />
-              {hud.isReloading ? 'WAIT' : hud.ammo <= 0 ? 'EMPTY' : 'FIRE'}
-            </button>
+            </div>
           </div>
         </div>
       )}

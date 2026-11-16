@@ -82,9 +82,29 @@
   animation: screenFadeIn 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+@keyframes levelUpPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.86) translate3d(0, 14px, 0);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.03) translate3d(0, -2px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+}
+
+.levelup-pop {
+  animation: levelUpPop 360ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tactical-ambient-glow,
-  .screen-transition {
+  .screen-transition,
+  .levelup-pop {
     animation: none;
   }
 }

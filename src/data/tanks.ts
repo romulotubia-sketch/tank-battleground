@@ -61,8 +61,8 @@ export const TANK_DEFINITIONS: Record<TankId, TankDefinition> = {
     description:
       'Thick composite plating and a heavy-caliber cannon built to anchor choke points and absorb incoming fire.',
     implemented: true,
-    unlockCost: 0,
-    isStarter: true,
+    unlockCost: 130,
+    isStarter: false,
     stats: {
       maxHp: 160,
       moveSpeed: 168,
@@ -115,8 +115,8 @@ export const TANK_DEFINITIONS: Record<TankId, TankDefinition> = {
     description:
       'Stripped-down recon chassis built for fast movement, quick repositioning, and hit-and-run combat.',
     implemented: true,
-    unlockCost: 0,
-    isStarter: true,
+    unlockCost: 90,
+    isStarter: false,
     stats: {
       maxHp: 135,
       moveSpeed: 216,
@@ -170,8 +170,8 @@ export const TANK_DEFINITIONS: Record<TankId, TankDefinition> = {
     description:
       'Long-barreled self-propelled siege cannon built to bombard distant targets with heavy shells and area barrages.',
     implemented: true,
-    unlockCost: 0,
-    isStarter: true,
+    unlockCost: 170,
+    isStarter: false,
     stats: {
       maxHp: 140,
       moveSpeed: 185,
@@ -229,8 +229,8 @@ export const TANK_DEFINITIONS: Record<TankId, TankDefinition> = {
     description:
       'Arc-capacitor battle tank that uses electric projectiles and EMP area disruption to control enemy movement.',
     implemented: true,
-    unlockCost: 0,
-    isStarter: true,
+    unlockCost: 210,
+    isStarter: false,
     stats: {
       maxHp: 155,
       moveSpeed: 210,
@@ -288,8 +288,8 @@ export const TANK_DEFINITIONS: Record<TankId, TankDefinition> = {
     description:
       'Low-profile stealth tank that reduces enemy attention, temporarily phases out of danger, and repositions rapidly.',
     implemented: true,
-    unlockCost: 0,
-    isStarter: true,
+    unlockCost: 250,
+    isStarter: false,
     stats: {
       maxHp: 135,
       moveSpeed: 242,

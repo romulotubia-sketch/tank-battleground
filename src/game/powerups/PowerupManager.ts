@@ -10,6 +10,9 @@ import { TankEntity } from '../entities/TankEntity';
 import { ApplyPickupResult } from './TemporaryEffectManager';
 import { EffectsPool } from '../systems/EffectsPool';
 import { soundFX } from '../systems/SoundFX';
+import { isValidPickupSpawnPosition } from './pickupPlacement';
+
+export { isValidPickupSpawnPosition } from './pickupPlacement';
 
 export interface ActiveWorldPowerup {
   id: PowerupId;
@@ -26,50 +29,6 @@ export type PickupCollectedCallback = (
   powerupId: PowerupId,
   result: ApplyPickupResult
 ) => void;
-
-export function isValidPickupSpawnPosition(
-  x: number,
-  y: number,
-  arenaWidth: number,
-  arenaHeight: number,
-  tanks: readonly Pick<TankEntity, 'alive' | 'x' | 'y' | 'radius'>[],
-  obstacles: readonly Pick<ObstacleEntity, 'alive' | 'containsPoint'>[],
-  spawns: readonly SpawnPoint[],
-  existingItems: readonly Pick<ActiveWorldPowerup, 'x' | 'y'>[],
-  minPickupSeparation: number = POWERUP_SPAWN_CONFIG.minPickupSeparation
-): boolean {
-  const margin = 105;
-  if (x < margin || x > arenaWidth - margin || y < margin || y > arenaHeight - margin) {
-    return false;
-  }
-
-  for (const obs of obstacles) {
-    if (!obs.alive) continue;
-    if (obs.containsPoint(x, y, POWERUP_SPAWN_CONFIG.obstacleClearance)) {
-      return false;
-    }
-  }
-
-  for (const sp of spawns) {
-    if (Math.hypot(sp.x - x, sp.y - y) < POWERUP_SPAWN_CONFIG.spawnPointClearance) {
-      return false;
-    }
-  }
-
-  for (const tank of tanks) {
-    if (tank.alive && Math.hypot(tank.x - x, tank.y - y) < tank.radius + POWERUP_SPAWN_CONFIG.tankClearance) {
-      return false;
-    }
-  }
-
-  for (const existing of existingItems) {
-    if (Math.hypot(existing.x - x, existing.y - y) < minPickupSeparation) {
-      return false;
-    }
-  }
-
-  return true;
-}
 
 export class PowerupManager {
   private scene: Phaser.Scene;

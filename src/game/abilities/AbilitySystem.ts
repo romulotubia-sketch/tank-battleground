@@ -152,6 +152,7 @@ export function deployTankMine(
     }
     if (blocked) continue;
 
+    if (!projectiles.canSpawnMine(tank.id)) return false;
     if (!tank.consumeMineCharge()) return false;
 
     const spawned = projectiles.spawnMine(
