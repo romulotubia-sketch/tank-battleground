@@ -1,0 +1,6 @@
+{
+  "name": "Tankbound Arena",
+  "description": "Mobile-first 2D top-down arcade tank battleground with destructible arenas, independent turret aiming, unique tank abilities, powerups, and AI opponents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

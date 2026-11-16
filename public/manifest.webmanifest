@@ -1,0 +1,10 @@
+{
+  "name": "Tankbound Arena",
+  "short_name": "Tankbound",
+  "description": "Mobile-first 2D top-down arcade tank battleground.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#141714",
+  "theme_color": "#141714"
+}
