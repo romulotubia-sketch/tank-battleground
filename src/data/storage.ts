@@ -164,7 +164,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   vibrationEnabled: true,
   controlSensitivity: 1.0,
   showTouchControls: 'always',
-  autoFireOnAim: false,
+  autoFireOnAim: true,
   lowDetailMode: false,
   matchDurationSec: 150,
   landscapePromptEnabled: true,

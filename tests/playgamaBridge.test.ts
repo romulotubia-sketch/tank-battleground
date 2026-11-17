@@ -16,7 +16,9 @@ import {
   StorageLike,
 } from '../src/data/storage.ts';
 import {
+  BridgeDiagnosticEntry,
   createPlaygamaBridgeAdapter,
+  formatRewardedAdStatusMessage,
   PlaygamaSdkLike,
 } from '../src/services/bridge/PlaygamaBridgeAdapter.ts';
 
@@ -50,6 +52,10 @@ class MockEventBus {
   emit(event: string, ...args: unknown[]): void {
     this.listeners.get(event)?.forEach((fn) => fn(...args));
   }
+
+  listenerCount(event: string): number {
+    return this.listeners.get(event)?.size ?? 0;
+  }
 }
 
 function createFakePlaygamaSdk(overrides: {
@@ -59,6 +65,7 @@ function createFakePlaygamaSdk(overrides: {
   isPlatformStorageAvailable?: boolean;
   throwOnInit?: boolean;
   initDelayMs?: number;
+  deferredInit?: boolean;
   throwOnAnalytics?: boolean;
 } = {}) {
   const bus = new MockEventBus();
@@ -71,14 +78,27 @@ function createFakePlaygamaSdk(overrides: {
   let loadingProgress: number | null = null;
   let showRewardedHandler: (() => void) | null = null;
   let showInterstitialHandler: (() => void) | null = null;
+  let shouldThrowOnInit = Boolean(overrides.throwOnInit);
+  let resolveDeferredInit: (() => void) | null = null;
+  let rejectDeferredInit: ((err: Error) => void) | null = null;
 
   const sdk: PlaygamaSdkLike = {
     version: '2.4.2-mock',
     isInitialized: false,
     async initialize() {
       initCalls += 1;
-      if (overrides.throwOnInit) {
+      if (shouldThrowOnInit) {
         throw new Error('SDK init failed');
+      }
+      if (overrides.deferredInit) {
+        await new Promise<void>((resolve, reject) => {
+          resolveDeferredInit = () => {
+            sdk.isInitialized = true;
+            resolve();
+          };
+          rejectDeferredInit = reject;
+        });
+        return;
       }
       if (overrides.initDelayMs && overrides.initDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, overrides.initDelayMs));
@@ -154,6 +174,15 @@ function createFakePlaygamaSdk(overrides: {
     getFlushCalls: () => flushCalls,
     getMinDelayConfigured: () => minDelayConfigured,
     getLoadingProgress: () => loadingProgress,
+    setThrowOnInit(val: boolean) {
+      shouldThrowOnInit = val;
+    },
+    resolveInit() {
+      resolveDeferredInit?.();
+    },
+    rejectInit(err: Error = new Error('Deferred init failed')) {
+      rejectDeferredInit?.(err);
+    },
     setShowRewardedHandler(fn: () => void) {
       showRewardedHandler = fn;
     },
@@ -163,25 +192,48 @@ function createFakePlaygamaSdk(overrides: {
   };
 }
 
-describe('Stage 16: Playgama Bridge SDK Integration', () => {
+describe('Playgama Bridge SDK Integration', () => {
   it('1. Initializes asynchronously once (deduplicated) and sends GAME_READY only once', async () => {
     const fake = createFakePlaygamaSdk({ initDelayMs: 10 });
-    const adapter = createPlaygamaBridgeAdapter({ getSdk: () => fake.sdk });
+    const logs: BridgeDiagnosticEntry[] = [];
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => fake.sdk,
+      onDiagnostic: (entry) => logs.push(entry),
+    });
 
     await Promise.all([adapter.init(), adapter.init(), adapter.init()]);
+    await adapter.init();
     assert.equal(fake.getInitCalls(), 1);
     assert.equal(adapter.isInitialized, true);
     assert.equal(adapter.isPlaygamaPlatform, true);
     assert.equal(fake.getMinDelayConfigured(), 60);
     assert.equal(fake.getLoadingProgress(), 100);
+    assert.equal(fake.bus.listenerCount(EVENT_NAME.PAUSE_STATE_CHANGED), 1);
+    assert.equal(fake.bus.listenerCount(EVENT_NAME.REWARDED_STATE_CHANGED), 1);
+    assert.equal(fake.bus.listenerCount(EVENT_NAME.INTERSTITIAL_STATE_CHANGED), 1);
 
     adapter.notifyGameReady();
     adapter.notifyGameReady();
     assert.deepEqual(fake.sentMessages, [PLATFORM_MESSAGE.GAME_READY]);
+    assert.equal(logs.some((l) => l.event === 'sdk_init_started'), true);
+    assert.equal(
+      logs.some(
+        (l) =>
+          l.event === 'sdk_init_completed' &&
+          l.details?.platformId === 'playgama' &&
+          l.details?.isRewardedSupported === true &&
+          l.details?.isInterstitialSupported === true
+      ),
+      true
+    );
   });
 
-  it('2. Falls back cleanly to local_offline when SDK is absent or initialization fails', async () => {
-    const noSdk = createPlaygamaBridgeAdapter({ getSdk: () => null });
+  it('2. Falls back cleanly to local_offline when SDK is absent or initialization fails and supports safe retryInit()', async () => {
+    const noSdkLogs: BridgeDiagnosticEntry[] = [];
+    const noSdk = createPlaygamaBridgeAdapter({
+      getSdk: () => null,
+      onDiagnostic: (entry) => noSdkLogs.push(entry),
+    });
     await noSdk.init();
     assert.equal(noSdk.isInitialized, true);
     assert.equal(noSdk.platformId, 'local_offline');
@@ -189,13 +241,34 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
     assert.equal(noSdk.isRewardedAdSupported, false);
     assert.equal(noSdk.isInterstitialAdSupported, false);
     assert.equal(noSdk.supportsPlatformStorage, false);
+    assert.equal(noSdkLogs.some((l) => l.event === 'sdk_init_failed'), true);
 
     const failing = createFakePlaygamaSdk({ throwOnInit: true });
-    const failedAdapter = createPlaygamaBridgeAdapter({ getSdk: () => failing.sdk });
+    const failedLogs: BridgeDiagnosticEntry[] = [];
+    const failedAdapter = createPlaygamaBridgeAdapter({
+      getSdk: () => failing.sdk,
+      onDiagnostic: (entry) => failedLogs.push(entry),
+    });
     await failedAdapter.init();
     assert.equal(failedAdapter.isInitialized, true);
     assert.equal(failedAdapter.platformId, 'local_offline');
     assert.equal(failedAdapter.isPlaygamaPlatform, false);
+    assert.equal(failing.getInitCalls(), 1);
+
+    // Passive init() calls must not spam repeated SDK initialization
+    await failedAdapter.init();
+    assert.equal(failing.getInitCalls(), 1);
+
+    // Explicit safe retryInit() recovers once the underlying failure clears
+    failing.setThrowOnInit(false);
+    await failedAdapter.retryInit();
+    assert.equal(failing.getInitCalls(), 2);
+    assert.equal(failedAdapter.platformId, 'playgama');
+    assert.equal(failedAdapter.isPlaygamaPlatform, true);
+    assert.equal(failedAdapter.isRewardedAdSupported, true);
+    assert.equal(failedAdapter.isInterstitialAdSupported, true);
+    failedAdapter.notifyGameReady();
+    assert.deepEqual(failing.sentMessages, [PLATFORM_MESSAGE.GAME_READY]);
   });
 
   it('3. Treats local/mock Playgama environments as local-only and never simulates rewarded ads', async () => {
@@ -205,7 +278,11 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
       isInterstitialSupported: false,
       isPlatformStorageAvailable: false,
     });
-    const adapter = createPlaygamaBridgeAdapter({ getSdk: () => mockSdk.sdk });
+    const logs: BridgeDiagnosticEntry[] = [];
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => mockSdk.sdk,
+      onDiagnostic: (entry) => logs.push(entry),
+    });
     await adapter.init();
 
     assert.equal(adapter.isPlaygamaPlatform, false);
@@ -215,11 +292,16 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
     const outcome = await adapter.showRewardedAd('test_grant_1');
     assert.equal(outcome.status, 'unavailable');
     assert.equal(outcome.granted, false);
+    assert.equal(logs.some((l) => l.event === 'ad_unavailable' && l.details?.adType === 'rewarded'), true);
   });
 
   it('4. Grants rewarded ad ONLY when REWARDED fires before CLOSED, never on skip or failure', async () => {
     const fake = createFakePlaygamaSdk();
-    const adapter = createPlaygamaBridgeAdapter({ getSdk: () => fake.sdk });
+    const logs: BridgeDiagnosticEntry[] = [];
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => fake.sdk,
+      onDiagnostic: (entry) => logs.push(entry),
+    });
     await adapter.init();
 
     // Case A: Skipped/closed without REWARDED -> not granted
@@ -253,6 +335,9 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
     assert.equal(rewarded.status, 'rewarded');
     assert.equal(rewarded.granted, true);
     assert.equal(adapter.isAdPlaying, false);
+    assert.equal(logs.some((l) => l.event === 'ad_request_started' && l.details?.adType === 'rewarded'), true);
+    assert.equal(logs.some((l) => l.event === 'ad_completed' && l.details?.granted === true), true);
+    assert.equal(logs.some((l) => l.event === 'ad_failed' && l.details?.adType === 'rewarded'), true);
   });
 
   it('5. Enforces idempotent rewarded Scrap grants and preserves existing save progress', () => {
@@ -288,7 +373,9 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
       getSdk: () => fake.sdk,
       now: () => nowMs,
       interstitialCooldownMs: 90_000,
+      interstitialFailureBackoffMs: 15_000,
       interstitialMatchesInterval: 2,
+      onDiagnostic: () => undefined,
     });
     await adapter.init();
 
@@ -309,7 +396,9 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
       getSdk: () => fake.sdk,
       now: () => nowMs,
       interstitialCooldownMs: 90_000,
+      interstitialFailureBackoffMs: 15_000,
       interstitialMatchesInterval: 2,
+      onDiagnostic: () => undefined,
     });
     await freshAdapter.init();
     freshAdapter.recordCompletedMatch();
@@ -324,23 +413,47 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
     assert.equal(eligibleRes.reason, 'completed');
     assert.equal(freshAdapter.isAdPlaying, false);
 
-    // Immediately afterwards blocked by cooldown & match count
+    // Successful interstitial resets match count AND cooldown timer:
+    // Even after 120s, 1 match is not enough
     freshAdapter.recordCompletedMatch();
+    nowMs += 120_000;
+    const oneMatchOnlyRes = await freshAdapter.maybeShowInterstitial('return_to_menu');
+    assert.equal(oneMatchOnlyRes.shown, false);
+    assert.equal(oneMatchOnlyRes.reason, 'cooldown');
+
+    // Even with 2 matches, only 30s since last shown ad is blocked by 90s cooldown
+    const freshCooldownCheck = createPlaygamaBridgeAdapter({
+      getSdk: () => fake.sdk,
+      now: () => nowMs,
+      interstitialCooldownMs: 90_000,
+      interstitialFailureBackoffMs: 15_000,
+      interstitialMatchesInterval: 2,
+      onDiagnostic: () => undefined,
+    });
+    await freshCooldownCheck.init();
+    freshCooldownCheck.recordCompletedMatch();
+    freshCooldownCheck.recordCompletedMatch();
+    const firstShown = await freshCooldownCheck.maybeShowInterstitial('match_complete');
+    assert.equal(firstShown.shown, true);
+    freshCooldownCheck.recordCompletedMatch();
+    freshCooldownCheck.recordCompletedMatch();
     nowMs += 30_000;
-    const tooSoonRes = await freshAdapter.maybeShowInterstitial('return_to_menu');
+    const tooSoonRes = await freshCooldownCheck.maybeShowInterstitial('return_to_menu');
     assert.equal(tooSoonRes.shown, false);
     assert.equal(tooSoonRes.reason, 'cooldown');
 
     // After 2 matches and >= 90s cooldown, interstitial is eligible again
-    freshAdapter.recordCompletedMatch();
-    nowMs += 90_000;
-    const nextRes = await freshAdapter.maybeShowInterstitial('return_to_menu');
+    nowMs += 60_000;
+    const nextRes = await freshCooldownCheck.maybeShowInterstitial('return_to_menu');
     assert.equal(nextRes.shown, true);
   });
 
   it('7. Propagates platform pause, audio, and visibility events reactively + gameplay/achievement messages', async () => {
     const fake = createFakePlaygamaSdk();
-    const adapter = createPlaygamaBridgeAdapter({ getSdk: () => fake.sdk });
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => fake.sdk,
+      onDiagnostic: () => undefined,
+    });
     await adapter.init();
 
     const observedStates: Array<{ paused: boolean; audio: boolean; visible: boolean }> = [];
@@ -379,7 +492,10 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
 
   it('8. Sanitizes analytics events against PII and isolates SDK analytics errors', async () => {
     const fake = createFakePlaygamaSdk();
-    const adapter = createPlaygamaBridgeAdapter({ getSdk: () => fake.sdk });
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => fake.sdk,
+      onDiagnostic: () => undefined,
+    });
     await adapter.init();
 
     adapter.trackEvent('match_victory', {
@@ -400,7 +516,10 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
     });
 
     const brokenFake = createFakePlaygamaSdk({ throwOnAnalytics: true });
-    const safeAdapter = createPlaygamaBridgeAdapter({ getSdk: () => brokenFake.sdk });
+    const safeAdapter = createPlaygamaBridgeAdapter({
+      getSdk: () => brokenFake.sdk,
+      onDiagnostic: () => undefined,
+    });
     await safeAdapter.init();
     assert.doesNotThrow(() => {
       safeAdapter.trackEvent('match_started', { tank_id: 'scout' });
@@ -409,7 +528,10 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
 
   it('9. Mirrors and reads platform storage arrays safely', async () => {
     const fake = createFakePlaygamaSdk({ isPlatformStorageAvailable: true });
-    const adapter = createPlaygamaBridgeAdapter({ getSdk: () => fake.sdk });
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => fake.sdk,
+      onDiagnostic: () => undefined,
+    });
     await adapter.init();
 
     adapter.syncSaveKey('tankbound_arena_progression_v1', '{"scrap":420}');
@@ -472,7 +594,10 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
       },
     };
 
-    const adapter = createPlaygamaBridgeAdapter({ getSdk: () => strictSdk });
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => strictSdk,
+      onDiagnostic: () => undefined,
+    });
 
     // Simulate pre-init React render & lifecycle calls
     const initialState = adapter.getState();
@@ -492,5 +617,378 @@ describe('Stage 16: Playgama Bridge SDK Integration', () => {
     unsub();
     assert.equal(adapter.isInitialized, true);
     assert.deepEqual(preInitAccesses, []);
+  });
+
+  it('11. Supports SDK initialization taking longer than 1,800 ms without timing out under default timeout', async () => {
+    const slowFake = createFakePlaygamaSdk({
+      platformId: PLATFORM_ID.PLAYGAMA_SANDBOX,
+      initDelayMs: 1950,
+    });
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => slowFake.sdk,
+      onDiagnostic: () => undefined,
+    });
+
+    await adapter.init();
+    assert.equal(adapter.isInitialized, true);
+    assert.equal(adapter.platformId, 'playgama_sandbox');
+    assert.equal(adapter.isPlaygamaPlatform, true);
+    assert.equal(adapter.isRewardedAdSupported, true);
+    assert.equal(adapter.isInterstitialAdSupported, true);
+    assert.equal(slowFake.getInitCalls(), 1);
+  });
+
+  it('12. Performs late initialization recovery when SDK resolves after UI fallback timeout', async () => {
+    const deferredFake = createFakePlaygamaSdk({
+      platformId: PLATFORM_ID.PLAYGAMA_SANDBOX,
+      deferredInit: true,
+    });
+    const logs: BridgeDiagnosticEntry[] = [];
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => deferredFake.sdk,
+      initTimeoutMs: 30,
+      onDiagnostic: (entry) => logs.push(entry),
+    });
+
+    const observedStates: Array<{ platformId: string; rewarded: boolean; interstitial: boolean }> = [];
+    const unsub = adapter.subscribeState((s) => {
+      observedStates.push({
+        platformId: s.platformId,
+        rewarded: s.isRewardedSupported,
+        interstitial: s.isInterstitialSupported,
+      });
+    });
+
+    // Times out at 30ms -> unblocks UI in temporary local_offline mode
+    await adapter.init();
+    assert.equal(adapter.isInitialized, true);
+    assert.equal(adapter.platformId, 'local_offline');
+    assert.equal(adapter.isPlaygamaPlatform, false);
+    assert.equal(adapter.isRewardedAdSupported, false);
+    assert.equal(adapter.isInterstitialAdSupported, false);
+    assert.equal(logs.some((l) => l.event === 'sdk_init_timed_out'), true);
+
+    // Calling notifyGameReady() or init() while timed out must NOT send early GAME_READY or call sdk.initialize() again
+    adapter.notifyGameReady();
+    await adapter.init();
+    assert.equal(deferredFake.getInitCalls(), 1);
+    assert.deepEqual(deferredFake.sentMessages, []);
+
+    // SDK completes asynchronously later -> late recovery must restore Playgama Sandbox & send GAME_READY once
+    deferredFake.resolveInit();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(adapter.platformId, 'playgama_sandbox');
+    assert.equal(adapter.isPlaygamaPlatform, true);
+    assert.equal(adapter.isRewardedAdSupported, true);
+    assert.equal(adapter.isInterstitialAdSupported, true);
+    assert.deepEqual(deferredFake.sentMessages, [PLATFORM_MESSAGE.GAME_READY]);
+    assert.equal(deferredFake.bus.listenerCount(EVENT_NAME.PAUSE_STATE_CHANGED), 1);
+    assert.equal(deferredFake.bus.listenerCount(EVENT_NAME.REWARDED_STATE_CHANGED), 1);
+    assert.equal(logs.some((l) => l.event === 'sdk_late_init_recovery'), true);
+    assert.equal(
+      observedStates[observedStates.length - 1]?.platformId,
+      'playgama_sandbox'
+    );
+
+    // Rewarded ad works immediately after late recovery
+    deferredFake.setShowRewardedHandler(() => {
+      deferredFake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.REWARDED);
+      deferredFake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.CLOSED);
+    });
+    const adOutcome = await adapter.showRewardedAd('late_recovery_grant');
+    assert.equal(adOutcome.status, 'rewarded');
+    assert.equal(adOutcome.granted, true);
+    unsub();
+  });
+
+  it('13. Correctly detects playgama_sandbox and qa_tool platforms and exposes ad/storage capabilities', async () => {
+    for (const pid of [PLATFORM_ID.PLAYGAMA_SANDBOX, PLATFORM_ID.QA_TOOL]) {
+      const fake = createFakePlaygamaSdk({
+        platformId: pid,
+        isRewardedSupported: true,
+        isInterstitialSupported: true,
+        isPlatformStorageAvailable: true,
+      });
+      const adapter = createPlaygamaBridgeAdapter({
+        getSdk: () => fake.sdk,
+        onDiagnostic: () => undefined,
+      });
+      await adapter.init();
+
+      assert.equal(adapter.platformId, pid);
+      assert.equal(adapter.isPlaygamaPlatform, true);
+      assert.equal(adapter.isRewardedAdSupported, true);
+      assert.equal(adapter.isInterstitialAdSupported, true);
+      assert.equal(adapter.supportsPlatformStorage, true);
+
+      fake.setShowRewardedHandler(() => {
+        fake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.REWARDED);
+        fake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.CLOSED);
+      });
+      const rewardedRes = await adapter.showRewardedAd(`grant_${pid}`);
+      assert.equal(rewardedRes.status, 'rewarded');
+      assert.equal(rewardedRes.granted, true);
+
+      adapter.recordCompletedMatch();
+      adapter.recordCompletedMatch();
+      fake.setShowInterstitialHandler(() => {
+        fake.bus.emit(EVENT_NAME.INTERSTITIAL_STATE_CHANGED, INTERSTITIAL_STATE.CLOSED);
+      });
+      const interRes = await adapter.maybeShowInterstitial('match_complete');
+      assert.equal(interRes.shown, true);
+      assert.equal(interRes.reason, 'completed');
+    }
+  });
+
+  it('14. Failed interstitials do not reset completedMatchesSinceAd or lastInterstitialAtMs while avoiding rapid retry spam', async () => {
+    let nowMs = 500_000;
+    const fake = createFakePlaygamaSdk({ platformId: PLATFORM_ID.PLAYGAMA_SANDBOX });
+    const logs: BridgeDiagnosticEntry[] = [];
+    let interCalls = 0;
+
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => fake.sdk,
+      now: () => nowMs,
+      interstitialCooldownMs: 90_000,
+      interstitialFailureBackoffMs: 15_000,
+      interstitialMatchesInterval: 2,
+      onDiagnostic: (entry) => logs.push(entry),
+    });
+    await adapter.init();
+
+    // First, establish a real shown interstitial so lastInterstitialAtMs is non-zero
+    adapter.recordCompletedMatch();
+    adapter.recordCompletedMatch();
+    fake.setShowInterstitialHandler(() => {
+      interCalls += 1;
+      fake.bus.emit(EVENT_NAME.INTERSTITIAL_STATE_CHANGED, INTERSTITIAL_STATE.CLOSED);
+    });
+    const firstSuccess = await adapter.maybeShowInterstitial('match_complete');
+    assert.equal(firstSuccess.shown, true);
+    assert.equal(interCalls, 1);
+
+    // Advance past 90s cooldown and complete 2 matches -> eligible again
+    nowMs += 95_000;
+    adapter.recordCompletedMatch();
+    adapter.recordCompletedMatch();
+
+    // SDK returns FAILED (e.g., no-fill)
+    fake.setShowInterstitialHandler(() => {
+      interCalls += 1;
+      fake.bus.emit(EVENT_NAME.INTERSTITIAL_STATE_CHANGED, INTERSTITIAL_STATE.FAILED);
+    });
+    const failedOutcome = await adapter.maybeShowInterstitial('match_complete');
+    assert.equal(failedOutcome.shown, false);
+    assert.equal(failedOutcome.reason, 'failed');
+    assert.equal(interCalls, 2);
+
+    // Rapid retry 1s later must be blocked by short failure backoff (no SDK spam)
+    nowMs += 1_000;
+    const rapidRetry = await adapter.maybeShowInterstitial('return_to_menu');
+    assert.equal(rapidRetry.shown, false);
+    assert.equal(rapidRetry.reason, 'cooldown');
+    assert.equal(interCalls, 2);
+
+    // After only 15s failure backoff (well under 90s normal cooldown!) and with NO extra matches,
+    // eligibility must still be preserved because the failure did NOT reset match count or lastInterstitialAtMs.
+    nowMs += 15_000;
+    fake.setShowInterstitialHandler(() => {
+      interCalls += 1;
+      fake.bus.emit(EVENT_NAME.INTERSTITIAL_STATE_CHANGED, INTERSTITIAL_STATE.CLOSED);
+    });
+    const recoveredOutcome = await adapter.maybeShowInterstitial('return_to_menu');
+    assert.equal(recoveredOutcome.shown, true);
+    assert.equal(recoveredOutcome.reason, 'completed');
+    assert.equal(interCalls, 3);
+    assert.equal(logs.some((l) => l.event === 'ad_failed' && l.details?.adType === 'interstitial'), true);
+  });
+
+  it('15. Records full rewarded diagnostics and specific outcomes for uninitialized bridge, unsupported platform, rejected requests, no ad available, and busy SDK states', async () => {
+    // A. Bridge not initialized (missing SDK / rejected init / deferred timeout)
+    const uninitLogs: BridgeDiagnosticEntry[] = [];
+    const rejectingFake = createFakePlaygamaSdk({ platformId: PLATFORM_ID.PLAYGAMA_SANDBOX });
+    rejectingFake.sdk.initialize = async () => {
+      const err = new Error('Config load failed') as Error & { code?: string };
+      err.name = 'BridgeError';
+      err.code = 'CONFIG_LOAD_FAILED';
+      throw err;
+    };
+    const uninitAdapter = createPlaygamaBridgeAdapter({
+      getSdk: () => rejectingFake.sdk,
+      onDiagnostic: (entry) => uninitLogs.push(entry),
+    });
+    const uninitOutcome = await uninitAdapter.showRewardedAd('grant_uninit');
+    assert.equal(uninitOutcome.status, 'unavailable');
+    assert.equal(uninitOutcome.granted, false);
+    assert.equal(uninitOutcome.reason, 'not_initialized');
+    assert.equal(uninitOutcome.errorCode, 'CONFIG_LOAD_FAILED');
+    assert.equal(uninitOutcome.errorMessage, 'Config load failed');
+    assert.equal(uninitOutcome.rewardCallbackReached, false);
+    assert.match(formatRewardedAdStatusMessage(uninitOutcome), /not initialized/i);
+    assert.match(formatRewardedAdStatusMessage(uninitOutcome), /CONFIG_LOAD_FAILED/);
+    const uninitDiag = uninitLogs.find((l) => l.event === 'ad_unavailable');
+    assert.equal(uninitDiag?.details?.bridgeInitialized, false);
+    assert.equal(uninitDiag?.details?.isRewardedSupported, false);
+    assert.equal(uninitDiag?.details?.hasShowRewarded, false);
+
+    // B. Rewarded ads unsupported on initialized platform
+    const unsupportedFake = createFakePlaygamaSdk({
+      platformId: PLATFORM_ID.MOCK,
+      isRewardedSupported: false,
+    });
+    const unsupportedLogs: BridgeDiagnosticEntry[] = [];
+    const unsupportedAdapter = createPlaygamaBridgeAdapter({
+      getSdk: () => unsupportedFake.sdk,
+      onDiagnostic: (entry) => unsupportedLogs.push(entry),
+    });
+    await unsupportedAdapter.init();
+    const unsupportedOutcome = await unsupportedAdapter.showRewardedAd('grant_unsupported');
+    assert.equal(unsupportedOutcome.status, 'unavailable');
+    assert.equal(unsupportedOutcome.granted, false);
+    assert.equal(unsupportedOutcome.reason, 'unsupported');
+    assert.equal(unsupportedOutcome.platformId, PLATFORM_ID.MOCK);
+    assert.equal(unsupportedOutcome.rewardCallbackReached, false);
+    assert.match(formatRewardedAdStatusMessage(unsupportedOutcome), /not supported/i);
+    const unsupDiag = unsupportedLogs.find((l) => l.event === 'ad_unavailable');
+    assert.equal(unsupDiag?.details?.bridgeInitialized, true);
+    assert.equal(unsupDiag?.details?.platformId, PLATFORM_ID.MOCK);
+    assert.equal(unsupDiag?.details?.isRewardedSupported, false);
+
+    // C. Ad request rejected synchronously (preserves error name, message, and code)
+    const rejectedFake = createFakePlaygamaSdk({ platformId: PLATFORM_ID.PLAYGAMA_SANDBOX });
+    const rejectedLogs: BridgeDiagnosticEntry[] = [];
+    const rejectedAdapter = createPlaygamaBridgeAdapter({
+      getSdk: () => rejectedFake.sdk,
+      onDiagnostic: (entry) => rejectedLogs.push(entry),
+    });
+    await rejectedAdapter.init();
+    rejectedFake.setShowRewardedHandler(() => {
+      const err = new Error('AdvService blocked by adblocker') as Error & { code?: string };
+      err.name = 'AdInitError';
+      err.code = 'ADV_BLOCKED';
+      throw err;
+    });
+    const syncRejected = await rejectedAdapter.showRewardedAd('grant_sync_reject');
+    assert.equal(syncRejected.status, 'failed');
+    assert.equal(syncRejected.granted, false);
+    assert.equal(syncRejected.reason, 'request_rejected');
+    assert.equal(syncRejected.errorName, 'AdInitError');
+    assert.equal(syncRejected.errorMessage, 'AdvService blocked by adblocker');
+    assert.equal(syncRejected.errorCode, 'ADV_BLOCKED');
+    assert.equal(syncRejected.rewardCallbackReached, false);
+    assert.equal(rejectedAdapter.isAdPlaying, false);
+    assert.match(formatRewardedAdStatusMessage(syncRejected), /ADV_BLOCKED/);
+    assert.equal(
+      rejectedLogs.some(
+        (l) =>
+          l.event === 'ad_request_rejected' &&
+          l.details?.errorCode === 'ADV_BLOCKED' &&
+          l.details?.errorName === 'AdInitError'
+      ),
+      true
+    );
+
+    // D. Ad request rejected asynchronously (returned Promise rejects)
+    rejectedFake.sdk.advertisement!.showRewarded = () => {
+      const err = new Error('Network fill rejected') as Error & { code?: string };
+      err.code = 'E_FILL_REJECTED';
+      return Promise.reject(err);
+    };
+    const asyncRejected = await rejectedAdapter.showRewardedAd('grant_async_reject');
+    assert.equal(asyncRejected.status, 'failed');
+    assert.equal(asyncRejected.granted, false);
+    assert.equal(asyncRejected.reason, 'request_rejected');
+    assert.equal(asyncRejected.errorCode, 'E_FILL_REJECTED');
+    assert.equal(asyncRejected.errorMessage, 'Network fill rejected');
+
+    // E. No ad available (SDK accepts request -> LOADING -> FAILED before OPENED)
+    const noFillFake = createFakePlaygamaSdk({ platformId: PLATFORM_ID.PLAYGAMA_SANDBOX });
+    const noFillLogs: BridgeDiagnosticEntry[] = [];
+    const noFillAdapter = createPlaygamaBridgeAdapter({
+      getSdk: () => noFillFake.sdk,
+      onDiagnostic: (entry) => noFillLogs.push(entry),
+    });
+    await noFillAdapter.init();
+    noFillFake.setShowRewardedHandler(() => {
+      noFillFake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.LOADING);
+      noFillFake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.FAILED, {
+        reason: 'empty',
+        message: 'No ad inventory available',
+      });
+    });
+    const noAdOutcome = await noFillAdapter.showRewardedAd('grant_no_ad');
+    assert.equal(noAdOutcome.status, 'failed');
+    assert.equal(noAdOutcome.granted, false);
+    assert.equal(noAdOutcome.reason, 'no_ad_available');
+    assert.equal(noAdOutcome.adState, REWARDED_STATE.FAILED);
+    assert.equal(noAdOutcome.errorCode, 'empty');
+    assert.equal(noAdOutcome.rewardCallbackReached, false);
+    assert.match(formatRewardedAdStatusMessage(noAdOutcome), /No rewarded ad/i);
+    const startLog = noFillLogs.find((l) => l.event === 'ad_request_started');
+    assert.equal(startLog?.details?.bridgeInitialized, true);
+    assert.equal(startLog?.details?.platformId, PLATFORM_ID.PLAYGAMA_SANDBOX);
+    assert.equal(startLog?.details?.isRewardedSupported, true);
+    assert.equal(startLog?.details?.hasShowRewarded, true);
+    assert.equal(typeof startLog?.details?.startedAtMs, 'number');
+    assert.equal(noFillLogs.some((l) => l.event === 'ad_request_accepted'), true);
+    const failLog = noFillLogs.find((l) => l.event === 'ad_failed');
+    assert.equal(failLog?.details?.stateSequence, 'loading->failed');
+    assert.equal(failLog?.details?.rewardCallbackReached, false);
+
+    // F. Busy SDK interstitialState prevents silent SDK drop in @playgama/bridge 2.4.2
+    noFillFake.sdk.advertisement!.interstitialState = INTERSTITIAL_STATE.OPENED;
+    const busyOutcome = await noFillAdapter.showRewardedAd('grant_busy_interstitial');
+    assert.equal(busyOutcome.status, 'failed');
+    assert.equal(busyOutcome.granted, false);
+    assert.equal(busyOutcome.reason, 'busy');
+    assert.equal(busyOutcome.adState, 'interstitial:opened');
+  });
+
+  it('16. Prevents duplicate rewarded-ad grants for the same grantId while allowing retries after skip/failure', async () => {
+    const fake = createFakePlaygamaSdk({ platformId: PLATFORM_ID.PLAYGAMA_SANDBOX });
+    const logs: BridgeDiagnosticEntry[] = [];
+    let showCalls = 0;
+    const adapter = createPlaygamaBridgeAdapter({
+      getSdk: () => fake.sdk,
+      onDiagnostic: (entry) => logs.push(entry),
+    });
+    await adapter.init();
+
+    // First attempt is skipped -> does NOT mark grantId as claimed, so retry is permitted
+    fake.setShowRewardedHandler(() => {
+      showCalls += 1;
+      fake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.LOADING);
+      fake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.OPENED);
+      fake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.CLOSED);
+    });
+    const skippedFirst = await adapter.showRewardedAd('match_bonus_99');
+    assert.equal(skippedFirst.status, 'skipped');
+    assert.equal(skippedFirst.granted, false);
+    assert.equal(skippedFirst.rewardCallbackReached, false);
+    assert.equal(showCalls, 1);
+
+    // Second attempt completes REWARDED -> CLOSED -> granted === true
+    fake.setShowRewardedHandler(() => {
+      showCalls += 1;
+      fake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.LOADING);
+      fake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.OPENED);
+      fake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.REWARDED);
+      fake.bus.emit(EVENT_NAME.REWARDED_STATE_CHANGED, REWARDED_STATE.CLOSED);
+    });
+    const completed = await adapter.showRewardedAd('match_bonus_99');
+    assert.equal(completed.status, 'rewarded');
+    assert.equal(completed.granted, true);
+    assert.equal(completed.rewardCallbackReached, true);
+    assert.equal(showCalls, 2);
+
+    // Third call with same grantId must be blocked before calling SDK showRewarded again
+    const duplicate = await adapter.showRewardedAd('match_bonus_99');
+    assert.equal(duplicate.granted, false);
+    assert.equal(duplicate.reason, 'duplicate_grant');
+    assert.equal(duplicate.rewardCallbackReached, false);
+    assert.equal(showCalls, 2);
+    assert.equal(logs.some((l) => l.event === 'rewarded_duplicate_grant_blocked'), true);
+    assert.match(formatRewardedAdStatusMessage(duplicate), /already been claimed/i);
   });
 });

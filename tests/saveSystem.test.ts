@@ -22,13 +22,16 @@ import {
   buyTankWithScrap,
   createDefaultProgression,
   CURRENT_SAVE_VERSION,
+  DEFAULT_SETTINGS,
   hydrateFromPlatformStorage,
   loadMissions,
   loadProgression,
   loadProgressionSafe,
+  loadSettings,
   MISSIONS_KEY,
   PROGRESSION_BACKUP_KEY,
   PROGRESSION_KEY,
+  resetSettingsToDefault,
   saveMissions,
   saveProgression,
   saveTankCustomization,
@@ -389,5 +392,13 @@ describe('Stage 14: Save System & Progression Persistence', () => {
     } finally {
       delete (globalThis as { bridge?: unknown }).bridge;
     }
+  });
+
+  it('11. Defaults Auto-Fire on Full Aim to true on fresh load and settings reset', () => {
+    const freshStorage = new MemoryStorage();
+    assert.equal(DEFAULT_SETTINGS.autoFireOnAim, true);
+    assert.equal(loadSettings(freshStorage).autoFireOnAim, true);
+    const reset = resetSettingsToDefault(freshStorage);
+    assert.equal(reset.autoFireOnAim, true);
   });
 });

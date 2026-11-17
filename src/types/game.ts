@@ -614,10 +614,29 @@ export interface TankCosmeticPreset {
 
 export type RewardedAdStatus = 'rewarded' | 'skipped' | 'failed' | 'unavailable';
 
+export type RewardedAdFailureReason =
+  | 'not_initialized'
+  | 'unsupported'
+  | 'missing_api'
+  | 'busy'
+  | 'no_ad_available'
+  | 'request_rejected'
+  | 'skipped'
+  | 'timeout'
+  | 'duplicate_grant'
+  | 'sdk_failed';
+
 export interface RewardedAdOutcome {
   status: RewardedAdStatus;
   granted: boolean;
   grantId?: string;
+  reason?: RewardedAdFailureReason;
+  platformId?: string;
+  adState?: string;
+  rewardCallbackReached?: boolean;
+  errorName?: string;
+  errorMessage?: string;
+  errorCode?: string;
 }
 
 export type InterstitialTrigger = 'match_complete' | 'return_to_menu';
@@ -630,6 +649,7 @@ export interface InterstitialOutcome {
 export interface BridgeRuntimeState {
   isInitialized: boolean;
   isInitPending: boolean;
+  isSdkReady: boolean;
   platformId: string;
   isPlaygamaPlatform: boolean;
   isPlatformPaused: boolean;

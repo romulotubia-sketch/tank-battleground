@@ -22,7 +22,9 @@ import {
   TANK_DEFINITIONS,
   TANK_LIST,
 } from '../data/tanks';
+import { formatRewardedAdStatusMessage } from '../services/bridge/PlaygamaBridgeAdapter';
 import {
+  BridgeRuntimeState,
   PlayerProgression,
   PurchaseOutcome,
   RewardedAdOutcome,
@@ -34,6 +36,7 @@ interface TankRosterScreenProps {
   progression: PlayerProgression;
   sessionCustomizations?: Partial<Record<TankId, TankCustomization>>;
   isRewardedSupported?: boolean;
+  bridgeState?: BridgeRuntimeState;
   onWatchRewardedAd?: (grantId: string) => Promise<RewardedAdOutcome>;
   onSelectTank: (tankId: TankId) => void;
   onPurchaseTank: (tankId: TankId) => PurchaseOutcome;
@@ -63,6 +66,7 @@ export function TankRosterScreen({
   progression,
   sessionCustomizations,
   isRewardedSupported = false,
+  bridgeState,
   onWatchRewardedAd,
   onSelectTank,
   onPurchaseTank,
@@ -398,22 +402,19 @@ export function TankRosterScreen({
                     try {
                       const grantId = `shop_${Date.now()}`;
                       const outcome = await onWatchRewardedAd(grantId);
-                      if (outcome.granted) {
-                        setShopNotice({
-                          type: 'success',
-                          text: `Supply Drop received: +${REWARDED_AD_BONUS_SCRAP} Scrap!`,
-                        });
-                      } else if (outcome.status === 'skipped') {
-                        setShopNotice({
-                          type: 'error',
-                          text: 'Ad closed early — no bonus Scrap awarded.',
-                        });
-                      } else {
-                        setShopNotice({
-                          type: 'error',
-                          text: 'Rewarded ads are unavailable offline or right now.',
-                        });
-                      }
+                      setShopNotice({
+                        type: outcome.granted ? 'success' : 'error',
+                        text: formatRewardedAdStatusMessage(outcome, REWARDED_AD_BONUS_SCRAP),
+                      });
+                    } catch (err: unknown) {
+                      const message =
+                        err instanceof Error && err.message.trim()
+                          ? err.message.trim().slice(0, 120)
+                          : 'Unexpected ad error';
+                      setShopNotice({
+                        type: 'error',
+                        text: `Rewarded ad failed (${message}) — no bonus Scrap granted.`,
+                      });
                     } finally {
                       setAdBusy(false);
                     }
@@ -429,6 +430,10 @@ export function TankRosterScreen({
                     ? 'Loading Ad...'
                     : isRewardedSupported
                     ? `Optional Ad · +${REWARDED_AD_BONUS_SCRAP} Scrap`
+                    : bridgeState && (!bridgeState.isInitialized || bridgeState.isInitPending || !bridgeState.isSdkReady)
+                    ? 'Optional Ad (+35 Scrap) · SDK Not Initialized'
+                    : bridgeState?.platformId
+                    ? `Optional Ad (+35 Scrap) · Unsupported (${bridgeState.platformId})`
                     : 'Optional Ad (+35 Scrap) · Offline Unavailable'}
                 </button>
               )}

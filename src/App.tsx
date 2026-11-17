@@ -380,6 +380,12 @@ export default function App() {
         if (rewardRes.granted) {
           progressionRef.current = rewardRes.nextProgression;
           setProgression(rewardRes.nextProgression);
+        } else {
+          return {
+            ...outcome,
+            granted: false,
+            reason: 'duplicate_grant',
+          };
         }
       }
       return outcome;
@@ -664,6 +670,7 @@ export default function App() {
           progression={progression}
           sessionCustomizations={progression.tankCustomizations}
           isRewardedSupported={bridgeState.isRewardedSupported}
+          bridgeState={bridgeState}
           onWatchRewardedAd={handleWatchRewardedAd}
           onSelectTank={handleSelectTank}
           onPurchaseTank={handlePurchaseTank}
@@ -737,6 +744,7 @@ export default function App() {
           progression={progression}
           summary={lastMatchSummary}
           isRewardedSupported={bridgeState.isRewardedSupported}
+          bridgeState={bridgeState}
           onWatchRewardedAd={handleWatchRewardedAd}
           onPlayAgain={handleResultsPlayAgain}
           onMainMenu={handleResultsMainMenu}

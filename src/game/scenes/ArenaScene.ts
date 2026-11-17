@@ -140,7 +140,7 @@ export class ArenaScene extends Phaser.Scene {
         vibrationEnabled: true,
         controlSensitivity: 1.0,
         showTouchControls: 'always',
-        autoFireOnAim: false,
+        autoFireOnAim: true,
         lowDetailMode: false,
         matchDurationSec: 150,
         landscapePromptEnabled: true,
@@ -308,6 +308,7 @@ export class ArenaScene extends Phaser.Scene {
     const cleanupBridgeListeners = () => {
       this.sceneActive = false;
       soundFX.stopAllLoops();
+      platformBridge.notifyGameplayStop();
       if (this.unsubCommand) {
         this.unsubCommand();
         this.unsubCommand = undefined;

@@ -4,7 +4,9 @@ import { REWARDED_AD_BONUS_SCRAP } from '../data/economy';
 import { calculateMatchScrapBreakdown, formatPlaytime } from '../data/progression';
 import { TANK_DEFINITIONS } from '../data/tanks';
 import { ARENA_DEFINITIONS } from '../game/arenas/arenaLayouts';
+import { formatRewardedAdStatusMessage } from '../services/bridge/PlaygamaBridgeAdapter';
 import {
+  BridgeRuntimeState,
   MatchProgressionSummary,
   MatchResult,
   PlayerProgression,
@@ -16,6 +18,7 @@ interface ResultsScreenProps {
   progression: PlayerProgression;
   summary: MatchProgressionSummary | null;
   isRewardedSupported?: boolean;
+  bridgeState?: BridgeRuntimeState;
   onWatchRewardedAd?: (grantId: string) => Promise<RewardedAdOutcome>;
   onPlayAgain: () => void;
   onMainMenu: () => void;
@@ -39,6 +42,7 @@ export function ResultsScreen({
   progression,
   summary,
   isRewardedSupported = false,
+  bridgeState,
   onWatchRewardedAd,
   onPlayAgain,
   onMainMenu,
@@ -325,6 +329,10 @@ export function ResultsScreen({
                   ? adStatusText
                   : isRewardedSupported
                   ? `Watch a short ad to receive +${REWARDED_AD_BONUS_SCRAP} bonus Scrap.`
+                  : bridgeState && (!bridgeState.isInitialized || bridgeState.isInitPending || !bridgeState.isSdkReady)
+                  ? 'Rewarded ads are unavailable because the Playgama SDK is not initialized.'
+                  : bridgeState?.platformId
+                  ? `Rewarded ads are not supported on this platform (${bridgeState.platformId}).`
                   : 'Rewarded ads are unavailable in local/offline mode.'}
               </p>
             </div>
@@ -337,15 +345,17 @@ export function ResultsScreen({
                 setAdStatusText(null);
                 try {
                   const outcome = await onWatchRewardedAd(rewardGrantId);
-                  if (outcome.granted) {
-                    setAdStatusText(`+${REWARDED_AD_BONUS_SCRAP} Bonus Scrap granted!`);
-                  } else if (outcome.status === 'skipped') {
-                    setAdStatusText('Ad closed early — no bonus Scrap granted.');
-                  } else if (outcome.status === 'unavailable') {
-                    setAdStatusText('Rewarded ads are not available right now.');
-                  } else {
-                    setAdStatusText('Ad failed to complete — no bonus Scrap granted.');
-                  }
+                  setAdStatusText(
+                    formatRewardedAdStatusMessage(outcome, REWARDED_AD_BONUS_SCRAP)
+                  );
+                } catch (err: unknown) {
+                  const message =
+                    err instanceof Error && err.message.trim()
+                      ? err.message.trim().slice(0, 120)
+                      : 'Unexpected ad error';
+                  setAdStatusText(
+                    `Rewarded ad failed (${message}) — no bonus Scrap granted.`
+                  );
                 } finally {
                   setAdBusy(false);
                 }
